@@ -79,6 +79,30 @@ export type Database = {
         };
         Relationships: [];
       };
+      voice_profiles: {
+        Row: {
+          user_id: string;
+          profile_json: Json;
+          interview_json: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          profile_json: Json;
+          interview_json: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          profile_json?: Json;
+          interview_json?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       usage_events: {
         Row: {
           id: string;
