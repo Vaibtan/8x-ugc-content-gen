@@ -11,6 +11,11 @@ import {
   RateLimited,
   TranscriptionFailed,
 } from "@/lib/errors";
+import {
+  type PackText,
+  PackTextSchema,
+  makePackTextFixture,
+} from "@/lib/content-pack/schema";
 import { RuntimeConfig } from "@/lib/runtime/config";
 import {
   type VoiceProfile,
@@ -21,6 +26,14 @@ import {
 export type VoiceProfileGenerationRequest = Readonly<{
   transcript: string;
   pastPosts: ReadonlyArray<string>;
+}>;
+
+export type ContentPackGenerationRequest = Readonly<{
+  idea: string;
+  pillar: string;
+  goal: "reach" | "leads";
+  voiceProfile: VoiceProfile;
+  hookPatterns: ReadonlyArray<string>;
 }>;
 
 export type AudioInput = Readonly<{
@@ -47,6 +60,9 @@ export class LLMPort extends Context.Tag("founder-voice/LLMPort")<
     generateVoiceProfile: (
       request: VoiceProfileGenerationRequest,
     ) => Effect.Effect<VoiceProfile, LLMPortFailure>;
+    generateContentPack: (
+      request: ContentPackGenerationRequest,
+    ) => Effect.Effect<PackText, LLMPortFailure>;
     transcribe: (audio: AudioInput) => Effect.Effect<string, LLMPortFailure>;
   }>
 >() {}
@@ -167,6 +183,26 @@ const profilePrompt = ({
     pastPosts.length > 0 ? pastPosts.join("\n\n---\n\n") : "None provided.",
   ].join("\n\n");
 
+const contentPackPrompt = ({
+  idea,
+  pillar,
+  goal,
+  voiceProfile,
+  hookPatterns,
+}: ContentPackGenerationRequest) =>
+  [
+    "Create a complete B2B founder content pack as strict JSON.",
+    `Goal: ${goal}. Pillar: ${pillar}.`,
+    "The LinkedIn post variants must use short paragraphs (at most three lines each), put the hook in their first 210 characters, never include a URL, and end with a save or comment CTA using the returned comment keyword.",
+    "The video script must be 150 words or fewer. The newsletter body must be 120 to 180 words.",
+    "Founder idea:",
+    idea,
+    "Voice profile:",
+    JSON.stringify(voiceProfile),
+    "Use these hook patterns as inspiration, never as unverifiable claims:",
+    hookPatterns.join("\n"),
+  ].join("\n\n");
+
 const languageModelLayer = (
   apiKey: Parameters<typeof OpenAiClient.layer>[0]["apiKey"],
 ) =>
@@ -204,6 +240,25 @@ export const LLMPortLive = Layer.effect(
           () =>
             new GenerationFailed({
               message: "Voice-profile generation timed out after 30 seconds.",
+              cause: "timeout",
+            }),
+        ),
+      generateContentPack: (request) =>
+        withProviderPolicy(
+          LanguageModel.generateObject({
+            objectName: "pack_text",
+            prompt: contentPackPrompt(request),
+            schema: PackTextSchema,
+          }).pipe(
+            Effect.map((response) => response.value),
+            Effect.provide(modelLayer),
+            Effect.mapError((cause) =>
+              classifyProviderError("content-pack", cause, "generation"),
+            ),
+          ),
+          () =>
+            new GenerationFailed({
+              message: "Content-pack generation timed out after 30 seconds.",
               cause: "timeout",
             }),
         ),
@@ -256,6 +311,7 @@ export const PublisherPortLive = Layer.succeed(PublisherPort, {
 
 export type LLMPortFakeOptions = Readonly<{
   voiceProfiles?: ReadonlyArray<VoiceProfile | LLMPortFailure>;
+  contentPacks?: ReadonlyArray<PackText | LLMPortFailure>;
   transcriptions?: ReadonlyArray<string | LLMPortFailure>;
 }>;
 
@@ -280,10 +336,15 @@ export const makeLLMPortFake = (options: LLMPortFakeOptions = {}) => {
     ...(options.voiceProfiles ?? [makeVoiceProfileFixture()]),
   ];
   const transcriptions = [...(options.transcriptions ?? ["fake transcript"])];
+  const contentPacks = [...(options.contentPacks ?? [makePackTextFixture()])];
 
   return Layer.succeed(LLMPort, {
     generateVoiceProfile: () => {
       const next = voiceProfiles.shift() ?? makeVoiceProfileFixture();
+      return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
+    },
+    generateContentPack: () => {
+      const next = contentPacks.shift() ?? makePackTextFixture();
       return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
     },
     transcribe: () => {

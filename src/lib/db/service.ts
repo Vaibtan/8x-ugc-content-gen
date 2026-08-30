@@ -9,6 +9,14 @@ import {
   type BrandKit as BrandKitType,
   type BrandKitInput,
 } from "@/lib/brand-kit/schema";
+import {
+  type AssetStatus,
+  type AssetType,
+  type JobStatus,
+  type PackStatus,
+  type PackText,
+  PackTextSchema,
+} from "@/lib/content-pack/schema";
 import { type Database, type Json } from "@/lib/db/database.types";
 import { SupabaseError, UserNotFound } from "@/lib/errors";
 import { Supabase } from "@/lib/supabase/service";
@@ -22,6 +30,9 @@ import {
 export type UserRow = Database["public"]["Tables"]["users"]["Row"];
 type BrandKitRow = Database["public"]["Tables"]["brand_kits"]["Row"];
 type VoiceProfileDbRow = Database["public"]["Tables"]["voice_profiles"]["Row"];
+type PackDbRow = Database["public"]["Tables"]["packs"]["Row"];
+type AssetDbRow = Database["public"]["Tables"]["assets"]["Row"];
+type JobDbRow = Database["public"]["Tables"]["jobs"]["Row"];
 
 export type VoiceProfileRow = Readonly<{
   user_id: string;
@@ -29,6 +40,51 @@ export type VoiceProfileRow = Readonly<{
   interview: VoiceInterview;
   created_at: string;
   updated_at: string;
+}>;
+
+export type PackRow = Readonly<{
+  id: string;
+  userId: string;
+  idea: string;
+  pillar: string;
+  goal: "reach" | "leads";
+  status: PackStatus;
+  idempotencyKey: string;
+  text: PackText | null;
+  costCents: number;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type AssetRow = Readonly<{
+  id: string;
+  packId: string;
+  type: AssetType;
+  status: AssetStatus;
+  content: unknown | null;
+  fileUrl: string | null;
+  error: string | null;
+  costCents: number;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type JobRow = Readonly<{
+  id: string;
+  packId: string;
+  assetId: string | null;
+  type:
+    | "generate-pack-text"
+    | "render-carousel"
+    | "render-video"
+    | "render-magnet";
+  status: JobStatus;
+  idempotencyKey: string;
+  attempt: number;
+  error: string | null;
+  costCents: number;
+  createdAt: string;
+  updatedAt: string;
 }>;
 
 const decodeVoiceProfileRow = (row: VoiceProfileDbRow) =>
@@ -44,6 +100,54 @@ const decodeVoiceProfileRow = (row: VoiceProfileDbRow) =>
     }),
     catch: (cause) =>
       new SupabaseError({ operation: "voice_profiles.decode", cause }),
+  });
+
+const decodePackRow = (row: PackDbRow): Effect.Effect<PackRow, SupabaseError> =>
+  Effect.try({
+    try: () => ({
+      id: row.id,
+      userId: row.user_id,
+      idea: row.idea,
+      pillar: row.pillar,
+      goal: row.goal,
+      status: row.status,
+      idempotencyKey: row.idempotency_key,
+      text:
+        row.content_json === null
+          ? null
+          : Schema.decodeUnknownSync(PackTextSchema)(row.content_json),
+      costCents: row.cost_cents,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }),
+    catch: (cause) => new SupabaseError({ operation: "packs.decode", cause }),
+  });
+
+const decodeAssetRow = (row: AssetDbRow): AssetRow => ({
+  id: row.id,
+  packId: row.pack_id,
+  type: row.type,
+  status: row.status,
+  content: row.content_json,
+  fileUrl: row.file_url,
+  error: row.error,
+  costCents: row.cost_cents,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const decodeJobRow = (row: JobDbRow): JobRow => ({
+  id: row.id,
+  packId: row.pack_id,
+  assetId: row.asset_id,
+  type: row.type,
+  status: row.status,
+  idempotencyKey: row.idempotency_key,
+  attempt: row.attempt,
+  error: row.error,
+  costCents: row.cost_cents,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
 });
 
 /**
@@ -71,6 +175,15 @@ export type DbService = Readonly<{
     path: string,
   ) => Effect.Effect<string, SupabaseError>;
   getUsageCents: (userId: string) => Effect.Effect<number, SupabaseError>;
+  createUsageEvent: (input: {
+    userId: string;
+    packId: string;
+    operation: string;
+    inputTokens: number;
+    outputTokens: number;
+    characters: number;
+    costCents: number;
+  }) => Effect.Effect<void, SupabaseError>;
   findOwnVoiceProfile: (
     userId: string,
   ) => Effect.Effect<VoiceProfileRow | null, SupabaseError>;
@@ -79,6 +192,75 @@ export type DbService = Readonly<{
     profile: VoiceProfile;
     interview: VoiceInterview;
   }) => Effect.Effect<VoiceProfileRow, SupabaseError>;
+  createPack: (input: {
+    userId: string;
+    idea: string;
+    pillar: string;
+    goal: "reach" | "leads";
+    idempotencyKey: string;
+  }) => Effect.Effect<PackRow, SupabaseError>;
+  findOwnPack: (
+    userId: string,
+    packId: string,
+  ) => Effect.Effect<PackRow | null, SupabaseError>;
+  findOwnPackByIdempotencyKey: (
+    userId: string,
+    idempotencyKey: string,
+  ) => Effect.Effect<PackRow | null, SupabaseError>;
+  listOwnPacks: (
+    userId: string,
+  ) => Effect.Effect<ReadonlyArray<PackRow>, SupabaseError>;
+  saveGeneratedPack: (input: {
+    packId: string;
+    text: PackText;
+    costCents: number;
+  }) => Effect.Effect<PackRow, SupabaseError>;
+  updatePackStatus: (
+    packId: string,
+    status: PackStatus,
+  ) => Effect.Effect<PackRow, SupabaseError>;
+  upsertAsset: (input: {
+    packId: string;
+    type: AssetType;
+    status: AssetStatus;
+    content: unknown | null;
+    fileUrl?: string | null;
+    error?: string | null;
+    costCents?: number;
+  }) => Effect.Effect<AssetRow, SupabaseError>;
+  listPackAssets: (
+    packId: string,
+  ) => Effect.Effect<ReadonlyArray<AssetRow>, SupabaseError>;
+  updateAssetStatus: (input: {
+    assetId: string;
+    status: AssetStatus;
+    error?: string | null;
+    fileUrl?: string | null;
+    costCents?: number;
+  }) => Effect.Effect<AssetRow, SupabaseError>;
+  enqueueJob: (input: {
+    packId: string;
+    assetId: string | null;
+    type: JobRow["type"];
+    idempotencyKey: string;
+    attempt?: number;
+  }) => Effect.Effect<JobRow, SupabaseError>;
+  listPackJobs: (
+    packId: string,
+  ) => Effect.Effect<ReadonlyArray<JobRow>, SupabaseError>;
+  updateJobStatus: (input: {
+    jobId: string;
+    status: JobStatus;
+    error?: string | null;
+    costCents?: number;
+  }) => Effect.Effect<JobRow, SupabaseError>;
+  claimQueuedJob: (
+    jobId: string,
+  ) => Effect.Effect<JobRow | null, SupabaseError>;
+  retryAsset: (
+    userId: string,
+    assetId: string,
+  ) => Effect.Effect<AssetRow, SupabaseError>;
 }>;
 
 export class Db extends Context.Tag("founder-voice/Db")<Db, DbService>() {}
@@ -101,6 +283,19 @@ const makeAssetPath = (
 
 const toSupabaseError = (operation: string) => (cause: unknown) =>
   new SupabaseError({ operation, cause });
+
+const jobTypeForAsset = (type: AssetType): JobRow["type"] | null => {
+  switch (type) {
+    case "carousel":
+      return "render-carousel";
+    case "video":
+      return "render-video";
+    case "magnet":
+      return "render-magnet";
+    default:
+      return null;
+  }
+};
 
 const validateOwnedAssetPaths = (
   userId: string,
@@ -218,6 +413,29 @@ export const DbLive = Layer.effect(
               events.reduce((total, event) => total + event.cost_cents, 0),
             ),
           ),
+      createUsageEvent: (input) =>
+        supabase
+          .query(
+            "usage_events.insert",
+            (client) =>
+              client
+                .from("usage_events")
+                .insert({
+                  user_id: input.userId,
+                  pack_id: input.packId,
+                  operation: input.operation,
+                  input_tokens: input.inputTokens,
+                  output_tokens: input.outputTokens,
+                  characters: input.characters,
+                  cost_cents: input.costCents,
+                })
+                .select("id")
+                .single() as unknown as PromiseLike<{
+                data: { id: string } | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.asVoid),
       findOwnVoiceProfile: (userId: string) =>
         supabase
           .query<VoiceProfileDbRow | null>(
@@ -262,6 +480,362 @@ export const DbLive = Layer.effect(
               }>,
           )
           .pipe(Effect.flatMap(decodeVoiceProfileRow)),
+      createPack: (input) =>
+        supabase
+          .query<PackDbRow>(
+            "packs.insert",
+            (client) =>
+              client
+                .from("packs")
+                .insert({
+                  user_id: input.userId,
+                  idea: input.idea,
+                  pillar: input.pillar,
+                  goal: input.goal,
+                  idempotency_key: input.idempotencyKey,
+                })
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.flatMap(decodePackRow)),
+      findOwnPack: (userId, packId) =>
+        supabase
+          .query<PackDbRow | null>(
+            "packs.select-own",
+            (client) =>
+              client
+                .from("packs")
+                .select()
+                .eq("id", packId)
+                .eq("user_id", userId)
+                .maybeSingle() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(
+            Effect.flatMap((row) =>
+              row === null ? Effect.succeed(null) : decodePackRow(row),
+            ),
+          ),
+      findOwnPackByIdempotencyKey: (userId, idempotencyKey) =>
+        supabase
+          .query<PackDbRow | null>(
+            "packs.select-idempotency",
+            (client) =>
+              client
+                .from("packs")
+                .select()
+                .eq("user_id", userId)
+                .eq("idempotency_key", idempotencyKey)
+                .maybeSingle() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(
+            Effect.flatMap((row) =>
+              row === null ? Effect.succeed(null) : decodePackRow(row),
+            ),
+          ),
+      listOwnPacks: (userId) =>
+        supabase
+          .query<ReadonlyArray<PackDbRow>>(
+            "packs.list-own",
+            (client) =>
+              client
+                .from("packs")
+                .select()
+                .eq("user_id", userId)
+                .order("updated_at", {
+                  ascending: false,
+                }) as unknown as PromiseLike<{
+                data: ReadonlyArray<PackDbRow> | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.flatMap((rows) => Effect.all(rows.map(decodePackRow)))),
+      saveGeneratedPack: ({ packId, text, costCents }) =>
+        supabase
+          .query<PackDbRow>(
+            "packs.save-generated",
+            (client) =>
+              client
+                .from("packs")
+                .update({
+                  content_json: Schema.encodeSync(PackTextSchema)(
+                    text,
+                  ) as unknown as Json,
+                  cost_cents: costCents,
+                  status: "ready",
+                })
+                .eq("id", packId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.flatMap(decodePackRow)),
+      updatePackStatus: (packId, status) =>
+        supabase
+          .query<PackDbRow>(
+            "packs.update-status",
+            (client) =>
+              client
+                .from("packs")
+                .update({ status })
+                .eq("id", packId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.flatMap(decodePackRow)),
+      upsertAsset: (input) =>
+        supabase
+          .query<AssetDbRow>(
+            "assets.upsert",
+            (client) =>
+              client
+                .from("assets")
+                .upsert(
+                  {
+                    pack_id: input.packId,
+                    type: input.type,
+                    status: input.status,
+                    content_json: input.content as Json | null,
+                    file_url: input.fileUrl ?? null,
+                    error: input.error ?? null,
+                    cost_cents: input.costCents ?? 0,
+                  },
+                  { onConflict: "pack_id,type" },
+                )
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: AssetDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map(decodeAssetRow)),
+      listPackAssets: (packId) =>
+        supabase
+          .query<ReadonlyArray<AssetDbRow>>(
+            "assets.list-pack",
+            (client) =>
+              client
+                .from("assets")
+                .select()
+                .eq("pack_id", packId)
+                .order("created_at", {
+                  ascending: true,
+                }) as unknown as PromiseLike<{
+                data: ReadonlyArray<AssetDbRow> | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map((rows) => rows.map(decodeAssetRow))),
+      updateAssetStatus: (input) =>
+        supabase
+          .query<AssetDbRow>(
+            "assets.update-status",
+            (client) =>
+              client
+                .from("assets")
+                .update({
+                  status: input.status,
+                  error: input.error,
+                  file_url: input.fileUrl,
+                  cost_cents: input.costCents,
+                })
+                .eq("id", input.assetId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: AssetDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map(decodeAssetRow)),
+      enqueueJob: (input) =>
+        Effect.gen(function* () {
+          const existing = yield* supabase.query<JobDbRow | null>(
+            "jobs.select-idempotency",
+            (client) =>
+              client
+                .from("jobs")
+                .select()
+                .eq("idempotency_key", input.idempotencyKey)
+                .maybeSingle() as unknown as PromiseLike<{
+                data: JobDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          if (existing !== null) return decodeJobRow(existing);
+          const created = yield* supabase.query<JobDbRow>(
+            "jobs.insert",
+            (client) =>
+              client
+                .from("jobs")
+                .insert({
+                  pack_id: input.packId,
+                  asset_id: input.assetId,
+                  type: input.type,
+                  idempotency_key: input.idempotencyKey,
+                  attempt: input.attempt ?? 0,
+                })
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: JobDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          return decodeJobRow(created);
+        }),
+      listPackJobs: (packId) =>
+        supabase
+          .query<ReadonlyArray<JobDbRow>>(
+            "jobs.list-pack",
+            (client) =>
+              client
+                .from("jobs")
+                .select()
+                .eq("pack_id", packId)
+                .order("created_at", {
+                  ascending: true,
+                }) as unknown as PromiseLike<{
+                data: ReadonlyArray<JobDbRow> | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map((rows) => rows.map(decodeJobRow))),
+      updateJobStatus: (input) =>
+        supabase
+          .query<JobDbRow>(
+            "jobs.update-status",
+            (client) =>
+              client
+                .from("jobs")
+                .update({
+                  status: input.status,
+                  error: input.error,
+                  cost_cents: input.costCents,
+                })
+                .eq("id", input.jobId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: JobDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map(decodeJobRow)),
+      claimQueuedJob: (jobId) =>
+        supabase
+          .query<JobDbRow | null>(
+            "jobs.claim-queued",
+            (client) =>
+              client
+                .from("jobs")
+                .update({ status: "running" })
+                .eq("id", jobId)
+                .eq("status", "queued")
+                .select()
+                .maybeSingle() as unknown as PromiseLike<{
+                data: JobDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map((job) => (job === null ? null : decodeJobRow(job)))),
+      retryAsset: (userId, assetId) =>
+        Effect.gen(function* () {
+          const asset = yield* supabase.query<AssetDbRow | null>(
+            "assets.select-for-retry",
+            (client) =>
+              client
+                .from("assets")
+                .select()
+                .eq("id", assetId)
+                .maybeSingle() as unknown as PromiseLike<{
+                data: AssetDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          if (asset === null) {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "assets.retry",
+                cause: new Error("Asset was not found."),
+              }),
+            );
+          }
+          const pack = yield* supabase.query<PackDbRow | null>(
+            "packs.select-for-asset-retry",
+            (client) =>
+              client
+                .from("packs")
+                .select()
+                .eq("id", asset.pack_id)
+                .eq("user_id", userId)
+                .maybeSingle() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          if (pack === null || asset.status !== "failed") {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "assets.retry",
+                cause: new Error("Only a failed asset in your pack can retry."),
+              }),
+            );
+          }
+          const type = jobTypeForAsset(asset.type);
+          if (type === null) {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "assets.retry",
+                cause: new Error(
+                  "This text asset does not have a renderer job.",
+                ),
+              }),
+            );
+          }
+          const retried = yield* supabase.query<AssetDbRow>(
+            "assets.retry-update",
+            (client) =>
+              client
+                .from("assets")
+                .update({ status: "queued", error: null })
+                .eq("id", assetId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: AssetDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          yield* supabase.query<JobDbRow>(
+            "jobs.retry-insert",
+            (client) =>
+              client
+                .from("jobs")
+                .insert({
+                  pack_id: asset.pack_id,
+                  asset_id: asset.id,
+                  type,
+                  idempotency_key: `${asset.id}:${type}:${asset.updated_at}`,
+                  attempt: 1,
+                })
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: JobDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          return decodeAssetRow(retried);
+        }),
     } satisfies DbService;
   }),
 );
@@ -307,6 +881,63 @@ export const getUsageCents = (userId: string) =>
     return yield* db.getUsageCents(userId);
   });
 
+export const createPack = (input: {
+  userId: string;
+  idea: string;
+  pillar: string;
+  goal: "reach" | "leads";
+  idempotencyKey: string;
+}) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.createPack(input);
+  });
+
+export const findOwnPack = (userId: string, packId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.findOwnPack(userId, packId);
+  });
+
+export const findOwnPackByIdempotencyKey = (
+  userId: string,
+  idempotencyKey: string,
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.findOwnPackByIdempotencyKey(userId, idempotencyKey);
+  });
+
+export const listOwnPacks = (userId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.listOwnPacks(userId);
+  });
+
+export const updatePackStatus = (packId: string, status: PackStatus) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.updatePackStatus(packId, status);
+  });
+
+export const listPackAssets = (packId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.listPackAssets(packId);
+  });
+
+export const listPackJobs = (packId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.listPackJobs(packId);
+  });
+
+export const retryAsset = (userId: string, assetId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.retryAsset(userId, assetId);
+  });
+
 export const findOwnVoiceProfile = (userId: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -328,6 +959,18 @@ export type InMemoryDb = Readonly<{
   rows: () => ReadonlyArray<UserRow>;
   brandKitRows: () => ReadonlyArray<BrandKitType>;
   voiceProfileRows: () => ReadonlyArray<VoiceProfileRow>;
+  packRows: () => ReadonlyArray<PackRow>;
+  assetRows: () => ReadonlyArray<AssetRow>;
+  jobRows: () => ReadonlyArray<JobRow>;
+  usageRows: () => ReadonlyArray<{
+    userId: string;
+    packId: string;
+    operation: string;
+    inputTokens: number;
+    outputTokens: number;
+    characters: number;
+    costCents: number;
+  }>;
 }>;
 
 /** A deterministic in-memory repository for the single application test seam. */
@@ -341,6 +984,21 @@ export const makeInMemoryDb = (
   const voiceProfiles = new Map(
     voiceProfileSeed.map((profile) => [profile.user_id, profile]),
   );
+  const packs = new Map<string, PackRow>();
+  const assets = new Map<string, AssetRow>();
+  const jobs = new Map<string, JobRow>();
+  const usageEvents: Array<{
+    userId: string;
+    packId: string;
+    operation: string;
+    inputTokens: number;
+    outputTokens: number;
+    characters: number;
+    costCents: number;
+  }> = [];
+  let sequence = 0;
+  const nextId = (prefix: string) => `${prefix}-${++sequence}`;
+  const timestamp = () => "2026-08-30T00:00:00.000Z";
 
   return {
     layer: Layer.succeed(Db, {
@@ -369,7 +1027,16 @@ export const makeInMemoryDb = (
         Effect.succeed(makeAssetPath(userId, kind, contentType)),
       createBrandAssetReadUrl: (path) =>
         Effect.succeed(`https://storage.example.test/read/${path}`),
-      getUsageCents: () => Effect.succeed(0),
+      getUsageCents: (userId) =>
+        Effect.succeed(
+          usageEvents
+            .filter((event) => event.userId === userId)
+            .reduce((total, event) => total + event.costCents, 0),
+        ),
+      createUsageEvent: (input) =>
+        Effect.sync(() => {
+          usageEvents.push(input);
+        }),
       findOwnVoiceProfile: (userId) =>
         Effect.succeed(voiceProfiles.get(userId) ?? null),
       saveVoiceProfile: ({ userId, profile, interview }) =>
@@ -386,9 +1053,227 @@ export const makeInMemoryDb = (
           voiceProfiles.set(userId, row);
           return row;
         }),
+      createPack: (input) =>
+        Effect.sync(() => {
+          const existing = [...packs.values()].find(
+            (pack) =>
+              pack.userId === input.userId &&
+              pack.idempotencyKey === input.idempotencyKey,
+          );
+          if (existing) return existing;
+          const now = timestamp();
+          const pack: PackRow = {
+            id: nextId("pack"),
+            userId: input.userId,
+            idea: input.idea,
+            pillar: input.pillar,
+            goal: input.goal,
+            status: "draft",
+            idempotencyKey: input.idempotencyKey,
+            text: null,
+            costCents: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+          packs.set(pack.id, pack);
+          return pack;
+        }),
+      findOwnPack: (userId, packId) =>
+        Effect.succeed(
+          (() => {
+            const pack = packs.get(packId);
+            return pack?.userId === userId ? pack : null;
+          })(),
+        ),
+      findOwnPackByIdempotencyKey: (userId, idempotencyKey) =>
+        Effect.succeed(
+          [...packs.values()].find(
+            (pack) =>
+              pack.userId === userId && pack.idempotencyKey === idempotencyKey,
+          ) ?? null,
+        ),
+      listOwnPacks: (userId) =>
+        Effect.succeed(
+          [...packs.values()]
+            .filter((pack) => pack.userId === userId)
+            .sort((left, right) =>
+              right.updatedAt.localeCompare(left.updatedAt),
+            ),
+        ),
+      saveGeneratedPack: ({ packId, text, costCents }) =>
+        Effect.sync(() => {
+          const pack = packs.get(packId);
+          if (!pack) {
+            throw new Error(`No pack ${packId} exists.`);
+          }
+          const saved: PackRow = {
+            ...pack,
+            text,
+            costCents,
+            status: "ready",
+            updatedAt: timestamp(),
+          };
+          packs.set(packId, saved);
+          return saved;
+        }),
+      updatePackStatus: (packId, status) =>
+        Effect.sync(() => {
+          const pack = packs.get(packId);
+          if (!pack) throw new Error(`No pack ${packId} exists.`);
+          const saved: PackRow = { ...pack, status, updatedAt: timestamp() };
+          packs.set(packId, saved);
+          return saved;
+        }),
+      upsertAsset: (input) =>
+        Effect.sync(() => {
+          const existing = [...assets.values()].find(
+            (asset) =>
+              asset.packId === input.packId && asset.type === input.type,
+          );
+          const now = timestamp();
+          const saved: AssetRow = {
+            id: existing?.id ?? nextId("asset"),
+            packId: input.packId,
+            type: input.type,
+            status: input.status,
+            content: input.content,
+            fileUrl: input.fileUrl ?? null,
+            error: input.error ?? null,
+            costCents: input.costCents ?? 0,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+          assets.set(saved.id, saved);
+          return saved;
+        }),
+      listPackAssets: (packId) =>
+        Effect.succeed(
+          [...assets.values()].filter((asset) => asset.packId === packId),
+        ),
+      updateAssetStatus: (input) =>
+        Effect.sync(() => {
+          const asset = assets.get(input.assetId);
+          if (!asset) throw new Error(`No asset ${input.assetId} exists.`);
+          const saved: AssetRow = {
+            ...asset,
+            status: input.status,
+            error: input.error ?? asset.error,
+            fileUrl: input.fileUrl ?? asset.fileUrl,
+            costCents: input.costCents ?? asset.costCents,
+            updatedAt: timestamp(),
+          };
+          assets.set(saved.id, saved);
+          return saved;
+        }),
+      enqueueJob: (input) =>
+        Effect.sync(() => {
+          const existing = [...jobs.values()].find(
+            (job) => job.idempotencyKey === input.idempotencyKey,
+          );
+          if (existing) return existing;
+          const now = timestamp();
+          const job: JobRow = {
+            id: nextId("job"),
+            packId: input.packId,
+            assetId: input.assetId,
+            type: input.type,
+            status: "queued",
+            idempotencyKey: input.idempotencyKey,
+            attempt: input.attempt ?? 0,
+            error: null,
+            costCents: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+          jobs.set(job.id, job);
+          return job;
+        }),
+      listPackJobs: (packId) =>
+        Effect.succeed(
+          [...jobs.values()].filter((job) => job.packId === packId),
+        ),
+      updateJobStatus: (input) =>
+        Effect.sync(() => {
+          const job = jobs.get(input.jobId);
+          if (!job) throw new Error(`No job ${input.jobId} exists.`);
+          const saved: JobRow = {
+            ...job,
+            status: input.status,
+            error: input.error ?? job.error,
+            costCents: input.costCents ?? job.costCents,
+            updatedAt: timestamp(),
+          };
+          jobs.set(saved.id, saved);
+          return saved;
+        }),
+      claimQueuedJob: (jobId) =>
+        Effect.sync(() => {
+          const job = jobs.get(jobId);
+          if (!job || job.status !== "queued") return null;
+          const claimed: JobRow = {
+            ...job,
+            status: "running",
+            updatedAt: timestamp(),
+          };
+          jobs.set(jobId, claimed);
+          return claimed;
+        }),
+      retryAsset: (userId, assetId) =>
+        Effect.gen(function* () {
+          const asset = assets.get(assetId);
+          const pack = asset ? packs.get(asset.packId) : undefined;
+          if (
+            !asset ||
+            !pack ||
+            pack.userId !== userId ||
+            asset.status !== "failed"
+          ) {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "assets.retry",
+                cause: new Error("Only a failed asset in your pack can retry."),
+              }),
+            );
+          }
+          const type = jobTypeForAsset(asset.type);
+          if (!type) {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "assets.retry",
+                cause: new Error("This asset cannot retry."),
+              }),
+            );
+          }
+          const queued: AssetRow = {
+            ...asset,
+            status: "queued",
+            error: null,
+            updatedAt: timestamp(),
+          };
+          assets.set(assetId, queued);
+          const job: JobRow = {
+            id: nextId("job"),
+            packId: pack.id,
+            assetId,
+            type,
+            status: "queued",
+            idempotencyKey: `${assetId}:${type}:retry-${jobs.size + 1}`,
+            attempt: 1,
+            error: null,
+            costCents: 0,
+            createdAt: timestamp(),
+            updatedAt: timestamp(),
+          };
+          jobs.set(job.id, job);
+          return queued;
+        }),
     }),
     rows: () => [...users.values()],
     brandKitRows: () => [...brandKits.values()],
     voiceProfileRows: () => [...voiceProfiles.values()],
+    packRows: () => [...packs.values()],
+    assetRows: () => [...assets.values()],
+    jobRows: () => [...jobs.values()],
+    usageRows: () => [...usageEvents],
   };
 };

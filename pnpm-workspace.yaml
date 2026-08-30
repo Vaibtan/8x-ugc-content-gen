@@ -1,5 +1,6 @@
 allowBuilds:
-  '@tailwindcss/oxide': true
+  "@tailwindcss/oxide": true
   esbuild: true
   msgpackr-extract: true
+  protobufjs: false
   unrs-resolver: true
