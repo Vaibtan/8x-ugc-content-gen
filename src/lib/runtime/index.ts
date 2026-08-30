@@ -55,9 +55,9 @@ const userDbLayer = (accessToken: string) =>
  * runtime. The request's JWT is scoped to this effect, never to the global
  * service-role Db layer.
  */
-export const runForUser = <A, E>(
+export const runForUser = <A, E, R extends AppServices>(
   accessToken: string,
-  effect: Effect.Effect<A, E, Db>,
+  effect: Effect.Effect<A, E, R>,
 ) => runtime.runPromise(effect.pipe(Effect.provide(userDbLayer(accessToken))));
 
 /** Resolving these services builds the Config layer and fails clearly on a missing variable. */
