@@ -83,6 +83,12 @@ export const makeInMemoryUsage = (): InMemoryUsage => {
           for (const record of matching) {
             yield* db.createUsageEvent(record);
           }
+          // Keep the in-memory behavior identical to UsageLive: a later
+          // external call must not flush the same meter record a second time.
+          const retained = records.filter(
+            (record) => record.userId !== userId || record.packId !== packId,
+          );
+          records.splice(0, records.length, ...retained);
           return matching.reduce(
             (total, record) => total + record.costCents,
             0,

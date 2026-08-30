@@ -23,6 +23,12 @@ import {
   makeVoiceProfileFixture,
 } from "@/lib/voice/schema";
 import {
+  type VoicePassAction,
+  type VoicePassResult,
+  VoicePassResultSchema,
+  makeVoicePassResultFixture,
+} from "@/lib/voice-pass/schema";
+import {
   type Strategy,
   type StrategySection,
   StrategySchema,
@@ -40,6 +46,12 @@ export type ContentPackGenerationRequest = Readonly<{
   goal: "reach" | "leads";
   voiceProfile: VoiceProfile;
   hookPatterns: ReadonlyArray<string>;
+}>;
+
+export type VoicePassGenerationRequest = Readonly<{
+  draft: string;
+  voiceProfile: VoiceProfile;
+  action: VoicePassAction;
 }>;
 
 export type AudioInput = Readonly<{
@@ -95,6 +107,10 @@ export class LLMPort extends Context.Tag("founder-voice/LLMPort")<
     generateContentPack: (
       request: ContentPackGenerationRequest,
     ) => Effect.Effect<PackText, LLMPortFailure>;
+    /** The only production call permitted to use gpt-5.6-terra. */
+    generateVoicePass: (
+      request: VoicePassGenerationRequest,
+    ) => Effect.Effect<VoicePassResult, LLMPortFailure>;
     transcribe: (audio: AudioInput) => Effect.Effect<string, LLMPortFailure>;
   }>
 >() {}
@@ -302,10 +318,27 @@ const contentPackPrompt = ({
     hookPatterns.join("\n"),
   ].join("\n\n");
 
+const voicePassPrompt = ({
+  draft,
+  voiceProfile,
+  action,
+}: VoicePassGenerationRequest) =>
+  [
+    "Rewrite this founder's draft so it sounds unmistakably like them.",
+    "Keep factual claims grounded in the draft. Do not invent results, customers, or citations.",
+    `Steering action: ${action}.`,
+    "Return a 0-to-100 fidelity score for the rewrite and concise notes explaining the meaningful changes.",
+    "Founder voice profile:",
+    JSON.stringify(voiceProfile),
+    "Draft:",
+    draft,
+  ].join("\n\n");
+
 const languageModelLayer = (
   apiKey: Parameters<typeof OpenAiClient.layer>[0]["apiKey"],
+  model: "gpt-5.6-luna" | "gpt-5.6-terra" = "gpt-5.6-luna",
 ) =>
-  OpenAiLanguageModel.layer({ model: "gpt-5.6-luna" }).pipe(
+  OpenAiLanguageModel.layer({ model }).pipe(
     Layer.provide(OpenAiClient.layer({ apiKey })),
     Layer.provide(FetchHttpClient.layer),
   );
@@ -320,6 +353,10 @@ export const LLMPortLive = Layer.effect(
   Effect.gen(function* () {
     const config = yield* RuntimeConfig;
     const modelLayer = languageModelLayer(config.openAiApiKey);
+    const voicePassModelLayer = languageModelLayer(
+      config.openAiApiKey,
+      "gpt-5.6-terra",
+    );
     const clientLayer = openAiClientLayer(config.openAiApiKey);
 
     return {
@@ -377,6 +414,25 @@ export const LLMPortLive = Layer.effect(
           () =>
             new GenerationFailed({
               message: "Content-pack generation timed out after 30 seconds.",
+              cause: "timeout",
+            }),
+        ),
+      generateVoicePass: (request) =>
+        withProviderPolicy(
+          LanguageModel.generateObject({
+            objectName: "voice_pass",
+            prompt: voicePassPrompt(request),
+            schema: VoicePassResultSchema,
+          }).pipe(
+            Effect.map((response) => response.value),
+            Effect.provide(voicePassModelLayer),
+            Effect.mapError((cause) =>
+              classifyProviderError("voice-pass", cause, "generation"),
+            ),
+          ),
+          () =>
+            new GenerationFailed({
+              message: "Voice-pass generation timed out after 30 seconds.",
               cause: "timeout",
             }),
         ),
@@ -467,6 +523,8 @@ export type LLMPortFakeOptions = Readonly<{
   webSearchResults?: ReadonlyArray<string | LLMPortFailure>;
   onWebSearch?: (request: NicheSearchRequest) => void;
   contentPacks?: ReadonlyArray<PackText | LLMPortFailure>;
+  voicePasses?: ReadonlyArray<VoicePassResult | LLMPortFailure>;
+  onVoicePass?: (request: VoicePassGenerationRequest) => void;
   transcriptions?: ReadonlyArray<string | LLMPortFailure>;
 }>;
 
@@ -499,6 +557,9 @@ export const makeLLMPortFake = (options: LLMPortFakeOptions = {}) => {
   ];
   const transcriptions = [...(options.transcriptions ?? ["fake transcript"])];
   const contentPacks = [...(options.contentPacks ?? [makePackTextFixture()])];
+  const voicePasses = [
+    ...(options.voicePasses ?? [makeVoicePassResultFixture()]),
+  ];
 
   return Layer.succeed(LLMPort, {
     generateVoiceProfile: () => {
@@ -520,6 +581,11 @@ export const makeLLMPortFake = (options: LLMPortFakeOptions = {}) => {
     },
     generateContentPack: () => {
       const next = contentPacks.shift() ?? makePackTextFixture();
+      return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
+    },
+    generateVoicePass: (request) => {
+      options.onVoicePass?.(request);
+      const next = voicePasses.shift() ?? makeVoicePassResultFixture();
       return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
     },
     transcribe: () => {
