@@ -56,6 +56,16 @@ export class VoiceProfileNotFound extends Data.TaggedError(
   readonly userId: string;
 }> {}
 
+/** A founder has not generated a strategy yet. */
+export class StrategyNotFound extends Data.TaggedError("StrategyNotFound")<{
+  readonly userId: string;
+}> {}
+
+/** A structured strategy output failed a product invariant before persistence. */
+export class InvalidStrategy extends Data.TaggedError("InvalidStrategy")<{
+  readonly message: string;
+}> {}
+
 export class NotImplemented extends Data.TaggedError("NotImplemented")<{
   readonly capability: string;
 }> {}

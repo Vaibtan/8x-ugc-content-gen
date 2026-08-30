@@ -103,6 +103,63 @@ export type Database = {
         };
         Relationships: [];
       };
+      strategies: {
+        Row: {
+          id: string;
+          user_id: string;
+          strategy_json: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          strategy_json: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          strategy_json?: Json;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      calendar_items: {
+        Row: {
+          id: string;
+          user_id: string;
+          strategy_id: string;
+          scheduled_for: string;
+          pillar_id: string;
+          format: "text_post" | "carousel" | "video" | "newsletter";
+          hook: string;
+          funnel_stage: "TOFU" | "MOFU" | "BOFU";
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          strategy_id: string;
+          scheduled_for: string;
+          pillar_id: string;
+          format: "text_post" | "carousel" | "video" | "newsletter";
+          hook: string;
+          funnel_stage: "TOFU" | "MOFU" | "BOFU";
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          scheduled_for?: string;
+          pillar_id?: string;
+          format?: "text_post" | "carousel" | "video" | "newsletter";
+          hook?: string;
+          funnel_stage?: "TOFU" | "MOFU" | "BOFU";
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       usage_events: {
         Row: {
           id: string;
