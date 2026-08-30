@@ -367,56 +367,39 @@ export const DbLive = Layer.effect(
               }),
             );
           }
+          const encodedStrategy = Schema.encodeSync(StrategySchema)(
+            strategy,
+          ) as unknown as Json;
+          const encodedCalendar = (
+            encodedStrategy as unknown as { calendar: Json }
+          ).calendar;
           const row = yield* supabase.query<StrategyDbRow>(
-            "strategies.upsert-own",
+            "strategies.replace-own",
             (client) =>
               client
-                .from("strategies")
-                .upsert(
-                  {
-                    user_id: userId,
-                    strategy_json: Schema.encodeSync(StrategySchema)(
-                      strategy,
-                    ) as unknown as Json,
-                  },
-                  { onConflict: "user_id" },
-                )
+                .rpc("save_strategy_with_calendar", {
+                  p_user_id: userId,
+                  p_strategy_json: encodedStrategy,
+                  p_calendar_json: encodedCalendar,
+                })
                 .select()
                 .single() as unknown as PromiseLike<{
                 data: StrategyDbRow;
                 error: unknown | null;
               }>,
           );
-          yield* supabase.query<null>(
-            "calendar_items.delete-own",
-            (client) =>
-              client
-                .from("calendar_items")
-                .delete()
-                .eq("strategy_id", row.id) as unknown as PromiseLike<{
-                data: null;
-                error: unknown | null;
-              }>,
-          );
           const calendar = yield* supabase.query<
             ReadonlyArray<CalendarItemDbRow>
           >(
-            "calendar_items.insert-own",
+            "calendar_items.select-after-replace",
             (client) =>
               client
                 .from("calendar_items")
-                .insert(
-                  strategy.calendar.map((item) => ({
-                    user_id: userId,
-                    strategy_id: row.id,
-                    scheduled_for: item.date,
-                    pillar_id: item.pillarId,
-                    format: item.format,
-                    hook: item.hook,
-                    funnel_stage: item.funnelStage,
-                  })),
-                )
-                .select() as unknown as PromiseLike<{
+                .select()
+                .eq("strategy_id", row.id)
+                .order("scheduled_for", {
+                  ascending: true,
+                }) as unknown as PromiseLike<{
                 data: ReadonlyArray<CalendarItemDbRow> | null;
                 error: unknown | null;
               }>,

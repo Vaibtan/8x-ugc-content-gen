@@ -194,7 +194,22 @@ export type Database = {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      save_strategy_with_calendar: {
+        Args: {
+          p_user_id: string;
+          p_strategy_json: Json;
+          p_calendar_json: Json;
+        };
+        Returns: {
+          id: string;
+          user_id: string;
+          strategy_json: Json;
+          created_at: string;
+          updated_at: string;
+        };
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

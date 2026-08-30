@@ -21,6 +21,11 @@ export type GenerateStrategyInput = Readonly<{
 export type RegenerateStrategySectionInput = GenerateStrategyInput &
   Readonly<{
     section: StrategySection;
+    /**
+     * A valid, locally edited strategy. Supplying it lets a regeneration retain
+     * edits the founder has made in the UI but has not submitted separately.
+     */
+    currentStrategy?: Strategy;
   }>;
 
 const businessAnswersFor = (
@@ -115,6 +120,7 @@ export const regenerateStrategySection = ({
   userId,
   section,
   useWebSearch = false,
+  currentStrategy,
 }: RegenerateStrategySectionInput) =>
   Effect.gen(function* () {
     const llm = yield* LLMPort;
@@ -124,15 +130,16 @@ export const regenerateStrategySection = ({
     if (existing === null) {
       return yield* Effect.fail(new StrategyNotFound({ userId }));
     }
+    const current = yield* validStrategy(currentStrategy ?? existing.strategy);
     const research = yield* researchFor(useWebSearch, evidence.businessAnswers);
     const generated = yield* llm.generateStrategySection({
       businessAnswers: evidence.businessAnswers,
       voiceProfile: evidence.profile,
       research,
-      current: existing.strategy,
+      current,
       section,
     });
-    const updated = replacementFor(existing.strategy, generated, section);
+    const updated = replacementFor(current, generated, section);
     const validated = yield* validStrategy(updated);
     yield* db.saveStrategy(userId, validated);
     return validated;

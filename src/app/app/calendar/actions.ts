@@ -81,12 +81,20 @@ export async function generateStrategyAction(
 export async function regenerateStrategySectionAction(
   section: unknown,
   useWebSearch: boolean,
+  currentStrategy?: unknown,
 ): Promise<StrategyActionResult> {
   if (
     typeof section !== "string" ||
     !STRATEGY_SECTIONS.includes(section as StrategySection)
   ) {
     return failure("Choose a valid strategy section to regenerate.");
+  }
+  const decoded =
+    currentStrategy === undefined
+      ? null
+      : Schema.decodeUnknownEither(StrategySchema)(currentStrategy);
+  if (decoded !== null && Either.isLeft(decoded)) {
+    return failure("Check the required strategy fields and calendar entries.");
   }
   const identity = await resolveIdentity();
   if (identity === null)
@@ -99,6 +107,7 @@ export async function regenerateStrategySectionAction(
         userId: identity.userId,
         section: section as StrategySection,
         useWebSearch,
+        currentStrategy: decoded?.right,
       }),
     );
     revalidatePath("/app/calendar");

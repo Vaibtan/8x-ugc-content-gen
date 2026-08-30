@@ -61,5 +61,57 @@ create trigger calendar_items_set_updated_at
   before update on public.calendar_items
   for each row execute procedure public.set_updated_at();
 
+-- The strategy JSON and its queryable calendar mirror each other. Keep their
+-- replacement in one transaction so a failed calendar insert cannot leave an
+-- otherwise valid strategy unreadable.
+create or replace function public.save_strategy_with_calendar(
+  p_user_id uuid,
+  p_strategy_json jsonb,
+  p_calendar_json jsonb
+)
+returns public.strategies
+language plpgsql
+set search_path = public
+as $$
+declare
+  saved_strategy public.strategies;
+begin
+  insert into public.strategies (user_id, strategy_json)
+  values (p_user_id, p_strategy_json)
+  on conflict (user_id) do update
+    set strategy_json = excluded.strategy_json
+  returning * into saved_strategy;
+
+  delete from public.calendar_items
+  where strategy_id = saved_strategy.id;
+
+  insert into public.calendar_items (
+    user_id,
+    strategy_id,
+    scheduled_for,
+    pillar_id,
+    format,
+    hook,
+    funnel_stage
+  )
+  select
+    p_user_id,
+    saved_strategy.id,
+    (item ->> 'date')::date,
+    item ->> 'pillarId',
+    item ->> 'format',
+    item ->> 'hook',
+    item ->> 'funnelStage'
+  from jsonb_array_elements(p_calendar_json) as item;
+
+  return saved_strategy;
+end;
+$$;
+
+revoke all on function public.save_strategy_with_calendar(uuid, jsonb, jsonb)
+  from public;
+grant execute on function public.save_strategy_with_calendar(uuid, jsonb, jsonb)
+  to authenticated;
+
 grant select, insert, update on public.strategies to authenticated;
 grant select, insert, update, delete on public.calendar_items to authenticated;

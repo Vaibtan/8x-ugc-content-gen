@@ -69,6 +69,7 @@ export function StrategyCalendar({
       const result = await regenerateStrategySectionAction(
         section,
         useWebSearch,
+        strategy,
       );
       apply(result);
     });

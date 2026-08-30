@@ -97,9 +97,13 @@ describe("StrategyService", () => {
       ),
     );
 
-    await runtime.runPromise(saveEditedStrategy({ userId, strategy: edited }));
+    await runtime.runPromise(saveEditedStrategy({ userId, strategy: initial }));
     const result = await runtime.runPromise(
-      regenerateStrategySection({ userId, section: "pillars" }),
+      regenerateStrategySection({
+        userId,
+        section: "pillars",
+        currentStrategy: edited,
+      }),
     );
 
     expect(result.icp.who).toBe("An ICP the founder edited by hand");
