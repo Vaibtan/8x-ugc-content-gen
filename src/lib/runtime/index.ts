@@ -16,6 +16,7 @@ import {
 } from "@/lib/ports";
 import { RuntimeConfigLive } from "@/lib/runtime/config";
 import { SupabaseForUser, SupabaseServiceLive } from "@/lib/supabase/service";
+import { Usage, UsageLive } from "@/lib/usage/service";
 
 type AppServices =
   | AuthGateway
@@ -24,7 +25,8 @@ type AppServices =
   | TTSPort
   | RendererPort
   | MailPort
-  | PublisherPort;
+  | PublisherPort
+  | Usage;
 
 const adaptersLive: Layer.Layer<AppServices, ConfigError.ConfigError> =
   Layer.mergeAll(
@@ -35,6 +37,7 @@ const adaptersLive: Layer.Layer<AppServices, ConfigError.ConfigError> =
     RendererPortLive,
     MailPortLive,
     PublisherPortLive,
+    UsageLive,
   ).pipe(Layer.provide(SupabaseServiceLive), Layer.provide(RuntimeConfigLive));
 
 /** The sole application runtime used by server actions, route handlers and jobs. */

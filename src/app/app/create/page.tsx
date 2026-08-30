@@ -1,12 +1,24 @@
-import { AppPlaceholder } from "@/components/app-placeholder";
+import { redirect } from "next/navigation";
 
-export default function CreatePage() {
+import { ContentPackWorkspace } from "@/components/content-pack-workspace";
+import { MobileShell } from "@/components/mobile-shell";
+import { getCurrentSession } from "@/lib/auth/server-client";
+import { findOwnVoiceProfile, listOwnPacks } from "@/lib/db/service";
+import { runForUser } from "@/lib/runtime";
+
+export default async function CreatePage() {
+  const session = await getCurrentSession();
+  if (!session) redirect("/");
+  const [voiceProfile, packs] = await Promise.all([
+    runForUser(session.access_token, findOwnVoiceProfile(session.user.id)),
+    runForUser(session.access_token, listOwnPacks(session.user.id)),
+  ]);
   return (
-    <AppPlaceholder
-      activePath="/app/create"
-      eyebrow="Make something"
-      title="Turn an idea into a pack."
-      description="The voice interview and content-pack generator arrive in the next slices. This tab is already one thumb tap away."
-    />
+    <MobileShell activePath="/app/create">
+      <ContentPackWorkspace
+        canGenerate={voiceProfile !== null}
+        initialPacks={packs}
+      />
+    </MobileShell>
   );
 }

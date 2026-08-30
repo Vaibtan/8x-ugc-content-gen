@@ -192,6 +192,120 @@ export type Database = {
         };
         Relationships: [];
       };
+      packs: {
+        Row: {
+          id: string;
+          user_id: string;
+          idea: string;
+          pillar: string;
+          goal: "reach" | "leads";
+          status: "draft" | "ready" | "posted" | "winner";
+          idempotency_key: string;
+          content_json: Json | null;
+          cost_cents: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          idea: string;
+          pillar: string;
+          goal: "reach" | "leads";
+          status?: "draft" | "ready" | "posted" | "winner";
+          idempotency_key: string;
+          content_json?: Json | null;
+          cost_cents?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: "draft" | "ready" | "posted" | "winner";
+          content_json?: Json | null;
+          cost_cents?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      assets: {
+        Row: {
+          id: string;
+          pack_id: string;
+          type: "post" | "carousel" | "video" | "newsletter" | "magnet";
+          status: "queued" | "running" | "done" | "failed";
+          content_json: Json | null;
+          file_url: string | null;
+          error: string | null;
+          cost_cents: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          pack_id: string;
+          type: "post" | "carousel" | "video" | "newsletter" | "magnet";
+          status?: "queued" | "running" | "done" | "failed";
+          content_json?: Json | null;
+          file_url?: string | null;
+          error?: string | null;
+          cost_cents?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: "queued" | "running" | "done" | "failed";
+          content_json?: Json | null;
+          file_url?: string | null;
+          error?: string | null;
+          cost_cents?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      jobs: {
+        Row: {
+          id: string;
+          pack_id: string;
+          asset_id: string | null;
+          type:
+            | "generate-pack-text"
+            | "render-carousel"
+            | "render-video"
+            | "render-magnet";
+          status: "queued" | "running" | "done" | "failed";
+          idempotency_key: string;
+          attempt: number;
+          error: string | null;
+          cost_cents: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          pack_id: string;
+          asset_id?: string | null;
+          type:
+            | "generate-pack-text"
+            | "render-carousel"
+            | "render-video"
+            | "render-magnet";
+          status?: "queued" | "running" | "done" | "failed";
+          idempotency_key: string;
+          attempt?: number;
+          error?: string | null;
+          cost_cents?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: "queued" | "running" | "done" | "failed";
+          attempt?: number;
+          error?: string | null;
+          cost_cents?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
