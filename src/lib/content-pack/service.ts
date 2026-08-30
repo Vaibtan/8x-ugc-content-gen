@@ -7,6 +7,10 @@ import { LLMPort } from "@/lib/ports";
 import { SupabaseError } from "@/lib/errors";
 import { Usage } from "@/lib/usage/service";
 import { type VoiceProfile } from "@/lib/voice/schema";
+import {
+  VoicePassService,
+  assetContentAsText,
+} from "@/lib/voice-pass/service";
 
 export type ContentPackInput = Readonly<{
   userId: string;
@@ -280,21 +284,36 @@ export const generateContentPack = (input: ContentPackInput) =>
       costCents,
     });
     const assets = yield* packAssets(savedPack.id, text, costCents);
+    // The generic draft is a real version, not a transient prompt artifact.
+    // Each text asset then takes the same Terra-backed service path as a
+    // founder steering action, which preserves a stable generic-vs-voice demo.
+    for (const asset of [assets.post, assets.newsletter]) {
+      yield* db.createAssetVersion({
+        assetId: asset.id,
+        action: "generic",
+        content: assetContentAsText(asset.content),
+        fidelityScore: null,
+        diffNotes: [],
+      });
+      yield* VoicePassService.run({
+        userId: input.userId,
+        packId: savedPack.id,
+        assetId: asset.id,
+        voiceProfile: input.voiceProfile,
+        action: "voice-pass",
+      });
+    }
     const mediaJobs = yield* queueMediaJobs(savedPack.id, assets);
     const completedGeneration = yield* db.updateJobStatus({
       jobId: generationJob.id,
       status: "done",
       costCents,
     });
+    const finalPack =
+      (yield* db.findOwnPack(input.userId, savedPack.id)) ?? savedPack;
     return {
-      pack: savedPack,
-      assets: [
-        assets.post,
-        assets.newsletter,
-        assets.carousel,
-        assets.video,
-        assets.magnet,
-      ],
+      pack: finalPack,
+      assets: yield* db.listPackAssets(savedPack.id),
       jobs: [completedGeneration, ...mediaJobs],
       reused: false,
     } satisfies ContentPackResult;

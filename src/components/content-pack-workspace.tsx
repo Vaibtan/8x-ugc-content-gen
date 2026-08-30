@@ -12,12 +12,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { AssetRow, JobRow, PackRow } from "@/lib/db/service";
+import type {
+  AssetRow,
+  AssetVersion,
+  JobRow,
+  PackRow,
+} from "@/lib/db/service";
 
 type PackSnapshot = Readonly<{
   pack: PackRow;
   assets: ReadonlyArray<AssetRow>;
   jobs: ReadonlyArray<JobRow>;
+  assetVersions: Readonly<Record<string, ReadonlyArray<AssetVersion>>>;
 }>;
 
 const PENDING_PACK_ID = "founder-voice.pending-pack-id";
@@ -31,7 +37,9 @@ const money = (cents: number) =>
   }).format(cents / 100);
 
 const contentFor = (asset: AssetRow) =>
-  asset.type === "post" && asset.content && typeof asset.content === "object"
+  typeof asset.content === "string"
+    ? asset.content
+    : asset.type === "post" && asset.content && typeof asset.content === "object"
     ? ((asset.content as { variants?: string[] }).variants ?? []).join(
         "\n\n---\n\n",
       )
@@ -62,6 +70,7 @@ export function ContentPackWorkspace({
   const [generating, setGenerating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [steeringAssetId, setSteeringAssetId] = useState<string | null>(null);
   const [streamedText, setStreamedText] = useState<
     Partial<Record<"post" | "newsletter" | "carousel" | "video" | "magnet", string>>
   >({});
@@ -189,7 +198,12 @@ export function ContentPackWorkspace({
             | { type: "pack-failed"; message: string };
           if (event.type === "pack-created") {
             localStorage.setItem(PENDING_PACK_ID, event.pack.id);
-            setSnapshot({ pack: event.pack, assets: [], jobs: [] });
+            setSnapshot({
+              pack: event.pack,
+              assets: [],
+              jobs: [],
+              assetVersions: {},
+            });
           }
           if (
             event.type === "pack-generating" ||
@@ -229,8 +243,8 @@ export function ContentPackWorkspace({
     }
   };
 
-  const copy = async (asset: AssetRow) => {
-    await navigator.clipboard.writeText(contentFor(asset));
+  const copy = async (asset: AssetRow, content = contentFor(asset)) => {
+    await navigator.clipboard.writeText(content);
     setCopied(asset.id);
     window.setTimeout(() => setCopied(null), 1500);
   };
@@ -253,6 +267,36 @@ export function ContentPackWorkspace({
       body: JSON.stringify({ action: "retry", assetId: asset.id }),
     });
     if (response.ok) await loadPack(snapshot.pack.id);
+  };
+
+  const steer = async (
+    asset: AssetRow,
+    action: "more-like-my-voice" | "punchier-hook" | "shorter",
+  ) => {
+    if (!snapshot) return;
+    setSteeringAssetId(asset.id);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/packs/${snapshot.pack.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, assetId: asset.id }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(payload?.error ?? "Could not rewrite this asset.");
+      }
+      await loadPack(snapshot.pack.id);
+      setMessage("New voice version saved. Your earlier versions are still here.");
+    } catch (cause) {
+      setMessage(
+        cause instanceof Error ? cause.message : "Could not rewrite this asset.",
+      );
+    } finally {
+      setSteeringAssetId(null);
+    }
   };
 
   return (
@@ -361,33 +405,101 @@ export function ContentPackWorkspace({
                 </pre>
               </article>
             ))}
-            {textAssets.map((asset) => (
-              <article
-                className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4"
-                key={asset.id}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="font-black capitalize">{asset.type}</h3>
-                  <span
-                    className={`rounded-full px-2 py-1 text-xs font-bold ${statusClass(asset.status)}`}
-                  >
-                    {asset.status}
-                  </span>
-                </div>
-                <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap text-sm leading-6 font-sans">
-                  {contentFor(asset)}
-                </pre>
-                <Button
-                  className="mt-3 w-full"
-                  onClick={() => void copy(asset)}
-                  type="button"
-                  variant="outline"
+            {textAssets.map((asset) => {
+              const versions = snapshot.assetVersions[asset.id] ?? [];
+              const generic = versions.find(
+                (version) => version.action === "generic",
+              );
+              const voice = versions.at(-1);
+              const visibleText = voice?.content ?? contentFor(asset);
+              return (
+                <article
+                  className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4"
+                  key={asset.id}
                 >
-                  {copied === asset.id ? <Check /> : <Clipboard />}
-                  {copied === asset.id ? "Copied" : "Copy text"}
-                </Button>
-              </article>
-            ))}
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-black capitalize">{asset.type}</h3>
+                    <span
+                      className={`rounded-full px-2 py-1 text-xs font-bold ${statusClass(asset.status)}`}
+                    >
+                      {asset.status}
+                    </span>
+                  </div>
+                  {voice?.fidelityScore !== null &&
+                  voice?.fidelityScore !== undefined ? (
+                    <div className="mt-3 flex items-center justify-between rounded-xl bg-[var(--muted)] px-3 py-2 text-sm">
+                      <span className="font-bold">Voice fidelity</span>
+                      <strong>{voice.fidelityScore}/100</strong>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <section className="min-w-0 rounded-xl border border-[var(--border)] p-2">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+                        Generic draft
+                      </p>
+                      <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 font-sans">
+                        {generic?.content ?? contentFor(asset)}
+                      </pre>
+                    </section>
+                    <section className="min-w-0 rounded-xl border border-[var(--accent)] bg-[var(--muted)] p-2">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--accent)]">
+                        My voice
+                      </p>
+                      <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 font-sans">
+                        {visibleText}
+                      </pre>
+                    </section>
+                  </div>
+                  {voice && voice.diffNotes.length > 0 ? (
+                    <p className="mt-3 text-xs leading-5 text-[var(--muted-foreground)]">
+                      {voice.diffNotes.join(" ")}
+                    </p>
+                  ) : null}
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <Button
+                      onClick={() => void copy(asset, visibleText)}
+                      type="button"
+                      variant="outline"
+                    >
+                      {copied === asset.id ? <Check /> : <Clipboard />}
+                      {copied === asset.id ? "Copied" : "Copy text"}
+                    </Button>
+                    <div className="grid grid-cols-3 gap-1">
+                      <Button
+                        aria-label={`Make ${asset.type} more like my voice`}
+                        disabled={steeringAssetId === asset.id}
+                        onClick={() => void steer(asset, "more-like-my-voice")}
+                        type="button"
+                        variant="outline"
+                      >
+                        Voice
+                      </Button>
+                      <Button
+                        aria-label={`Give ${asset.type} a punchier hook`}
+                        disabled={steeringAssetId === asset.id}
+                        onClick={() => void steer(asset, "punchier-hook")}
+                        type="button"
+                        variant="outline"
+                      >
+                        Hook
+                      </Button>
+                      <Button
+                        aria-label={`Make ${asset.type} shorter`}
+                        disabled={steeringAssetId === asset.id}
+                        onClick={() => void steer(asset, "shorter")}
+                        type="button"
+                        variant="outline"
+                      >
+                        Shorter
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+                    {versions.length} saved version{versions.length === 1 ? "" : "s"}
+                  </p>
+                </article>
+              );
+            })}
           </div>
           <div className="space-y-3">
             <h3 className="text-lg font-black">Media jobs</h3>

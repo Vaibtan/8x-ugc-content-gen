@@ -262,6 +262,50 @@ export type Database = {
         };
         Relationships: [];
       };
+      asset_versions: {
+        Row: {
+          id: string;
+          asset_id: string;
+          version: number;
+          action:
+            | "generic"
+            | "voice-pass"
+            | "more-like-my-voice"
+            | "punchier-hook"
+            | "shorter";
+          content: string;
+          fidelity_score: number | null;
+          diff_notes: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          asset_id: string;
+          version?: number;
+          action:
+            | "generic"
+            | "voice-pass"
+            | "more-like-my-voice"
+            | "punchier-hook"
+            | "shorter";
+          content: string;
+          fidelity_score?: number | null;
+          diff_notes?: Json;
+          created_at?: string;
+        };
+        Update: {
+          action?:
+            | "generic"
+            | "voice-pass"
+            | "more-like-my-voice"
+            | "punchier-hook"
+            | "shorter";
+          content?: string;
+          fidelity_score?: number | null;
+          diff_notes?: Json;
+        };
+        Relationships: [];
+      };
       jobs: {
         Row: {
           id: string;

@@ -26,6 +26,7 @@ import {
   VoiceInterviewSchema,
   VoiceProfileSchema,
 } from "@/lib/voice/schema";
+import { type VoicePassAction } from "@/lib/voice-pass/schema";
 import {
   type CalendarItem,
   type Strategy,
@@ -40,6 +41,8 @@ type StrategyDbRow = Database["public"]["Tables"]["strategies"]["Row"];
 type CalendarItemDbRow = Database["public"]["Tables"]["calendar_items"]["Row"];
 type PackDbRow = Database["public"]["Tables"]["packs"]["Row"];
 type AssetDbRow = Database["public"]["Tables"]["assets"]["Row"];
+type AssetVersionDbRow =
+  Database["public"]["Tables"]["asset_versions"]["Row"];
 type JobDbRow = Database["public"]["Tables"]["jobs"]["Row"];
 
 export type VoiceProfileRow = Readonly<{
@@ -83,6 +86,18 @@ export type AssetRow = Readonly<{
   costCents: number;
   createdAt: string;
   updatedAt: string;
+}>;
+
+/** A durable snapshot of a text asset, ordered per asset from generic to current. */
+export type AssetVersion = Readonly<{
+  id: string;
+  assetId: string;
+  version: number;
+  action: "generic" | VoicePassAction;
+  content: string;
+  fidelityScore: number | null;
+  diffNotes: ReadonlyArray<string>;
+  createdAt: string;
 }>;
 
 export type JobRow = Readonly<{
@@ -151,6 +166,26 @@ const decodeAssetRow = (row: AssetDbRow): AssetRow => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
+
+const decodeAssetVersionRow = (
+  row: AssetVersionDbRow,
+): Effect.Effect<AssetVersion, SupabaseError> =>
+  Effect.try({
+    try: () => ({
+      id: row.id,
+      assetId: row.asset_id,
+      version: row.version,
+      action: row.action,
+      content: row.content,
+      fidelityScore: row.fidelity_score,
+      diffNotes: Schema.decodeUnknownSync(Schema.Array(Schema.String))(
+        row.diff_notes,
+      ),
+      createdAt: row.created_at,
+    }),
+    catch: (cause) =>
+      new SupabaseError({ operation: "asset_versions.decode", cause }),
+  });
 
 const decodeJobRow = (row: JobDbRow): JobRow => ({
   id: row.id,
@@ -242,6 +277,10 @@ export type DbService = Readonly<{
     packId: string,
     status: PackStatus,
   ) => Effect.Effect<PackRow, SupabaseError>;
+  updatePackCost: (input: {
+    packId: string;
+    costCents: number;
+  }) => Effect.Effect<PackRow, SupabaseError>;
   upsertAsset: (input: {
     packId: string;
     type: AssetType;
@@ -251,9 +290,23 @@ export type DbService = Readonly<{
     error?: string | null;
     costCents?: number;
   }) => Effect.Effect<AssetRow, SupabaseError>;
+  updateAssetContent: (input: {
+    assetId: string;
+    content: unknown | null;
+  }) => Effect.Effect<AssetRow, SupabaseError>;
   listPackAssets: (
     packId: string,
   ) => Effect.Effect<ReadonlyArray<AssetRow>, SupabaseError>;
+  createAssetVersion: (input: {
+    assetId: string;
+    action: "generic" | VoicePassAction;
+    content: string;
+    fidelityScore: number | null;
+    diffNotes: ReadonlyArray<string>;
+  }) => Effect.Effect<AssetVersion, SupabaseError>;
+  listAssetVersions: (
+    assetId: string,
+  ) => Effect.Effect<ReadonlyArray<AssetVersion>, SupabaseError>;
   updateAssetStatus: (input: {
     assetId: string;
     status: AssetStatus;
@@ -740,6 +793,22 @@ export const DbLive = Layer.effect(
               }>,
           )
           .pipe(Effect.flatMap(decodePackRow)),
+      updatePackCost: ({ packId, costCents }) =>
+        supabase
+          .query<PackDbRow>(
+            "packs.update-cost",
+            (client) =>
+              client
+                .from("packs")
+                .update({ cost_cents: costCents })
+                .eq("id", packId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: PackDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.flatMap(decodePackRow)),
       upsertAsset: (input) =>
         supabase
           .query<AssetDbRow>(
@@ -766,6 +835,22 @@ export const DbLive = Layer.effect(
               }>,
           )
           .pipe(Effect.map(decodeAssetRow)),
+      updateAssetContent: ({ assetId, content }) =>
+        supabase
+          .query<AssetDbRow>(
+            "assets.update-content",
+            (client) =>
+              client
+                .from("assets")
+                .update({ content_json: content as Json | null })
+                .eq("id", assetId)
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: AssetDbRow | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(Effect.map(decodeAssetRow)),
       listPackAssets: (packId) =>
         supabase
           .query<ReadonlyArray<AssetDbRow>>(
@@ -783,6 +868,63 @@ export const DbLive = Layer.effect(
               }>,
           )
           .pipe(Effect.map((rows) => rows.map(decodeAssetRow))),
+      createAssetVersion: (input) =>
+        Effect.gen(function* () {
+          const latest = yield* supabase.query<ReadonlyArray<AssetVersionDbRow>>(
+            "asset_versions.select-latest",
+            (client) =>
+              client
+                .from("asset_versions")
+                .select()
+                .eq("asset_id", input.assetId)
+                .order("version", { ascending: false })
+                .limit(1) as unknown as PromiseLike<{
+                data: ReadonlyArray<AssetVersionDbRow> | null;
+                error: unknown | null;
+              }>,
+          );
+          const version = (latest[0]?.version ?? 0) + 1;
+          return yield* supabase
+            .query<AssetVersionDbRow>(
+              "asset_versions.insert",
+              (client) =>
+                client
+                  .from("asset_versions")
+                  .insert({
+                    asset_id: input.assetId,
+                    version,
+                    action: input.action,
+                    content: input.content,
+                    fidelity_score: input.fidelityScore,
+                    diff_notes: input.diffNotes as unknown as Json,
+                  })
+                  .select()
+                  .single() as unknown as PromiseLike<{
+                  data: AssetVersionDbRow | null;
+                  error: unknown | null;
+                }>,
+            )
+            .pipe(Effect.flatMap(decodeAssetVersionRow));
+        }),
+      listAssetVersions: (assetId) =>
+        supabase
+          .query<ReadonlyArray<AssetVersionDbRow>>(
+            "asset_versions.list",
+            (client) =>
+              client
+                .from("asset_versions")
+                .select()
+                .eq("asset_id", assetId)
+                .order("version", { ascending: true }) as unknown as PromiseLike<{
+                data: ReadonlyArray<AssetVersionDbRow> | null;
+                error: unknown | null;
+              }>,
+          )
+          .pipe(
+            Effect.flatMap((rows) =>
+              Effect.all(rows.map(decodeAssetVersionRow)),
+            ),
+          ),
       updateAssetStatus: (input) =>
         supabase
           .query<AssetDbRow>(
@@ -1064,6 +1206,12 @@ export const updatePackStatus = (packId: string, status: PackStatus) =>
     return yield* db.updatePackStatus(packId, status);
   });
 
+export const listAssetVersions = (assetId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.listAssetVersions(assetId);
+  });
+
 export const listPackAssets = (packId: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -1118,6 +1266,7 @@ export type InMemoryDb = Readonly<{
   strategyRows: () => ReadonlyArray<StrategyRow>;
   packRows: () => ReadonlyArray<PackRow>;
   assetRows: () => ReadonlyArray<AssetRow>;
+  assetVersionRows: () => ReadonlyArray<AssetVersion>;
   jobRows: () => ReadonlyArray<JobRow>;
   usageRows: () => ReadonlyArray<{
     userId: string;
@@ -1147,6 +1296,7 @@ export const makeInMemoryDb = (
   );
   const packs = new Map<string, PackRow>();
   const assets = new Map<string, AssetRow>();
+  const assetVersions = new Map<string, AssetVersion>();
   const jobs = new Map<string, JobRow>();
   const usageEvents: Array<{
     userId: string;
@@ -1310,6 +1460,18 @@ export const makeInMemoryDb = (
           packs.set(packId, saved);
           return saved;
         }),
+      updatePackCost: ({ packId, costCents }) =>
+        Effect.sync(() => {
+          const pack = packs.get(packId);
+          if (!pack) throw new Error(`No pack ${packId} exists.`);
+          const saved: PackRow = {
+            ...pack,
+            costCents,
+            updatedAt: timestamp(),
+          };
+          packs.set(packId, saved);
+          return saved;
+        }),
       upsertAsset: (input) =>
         Effect.sync(() => {
           const existing = [...assets.values()].find(
@@ -1332,9 +1494,45 @@ export const makeInMemoryDb = (
           assets.set(saved.id, saved);
           return saved;
         }),
+      updateAssetContent: ({ assetId, content }) =>
+        Effect.sync(() => {
+          const asset = assets.get(assetId);
+          if (!asset) throw new Error(`No asset ${assetId} exists.`);
+          const saved: AssetRow = {
+            ...asset,
+            content,
+            updatedAt: timestamp(),
+          };
+          assets.set(assetId, saved);
+          return saved;
+        }),
       listPackAssets: (packId) =>
         Effect.succeed(
           [...assets.values()].filter((asset) => asset.packId === packId),
+        ),
+      createAssetVersion: (input) =>
+        Effect.sync(() => {
+          const versions = [...assetVersions.values()].filter(
+            (version) => version.assetId === input.assetId,
+          );
+          const saved: AssetVersion = {
+            id: nextId("asset-version"),
+            assetId: input.assetId,
+            version: (versions.at(-1)?.version ?? 0) + 1,
+            action: input.action,
+            content: input.content,
+            fidelityScore: input.fidelityScore,
+            diffNotes: [...input.diffNotes],
+            createdAt: timestamp(),
+          };
+          assetVersions.set(saved.id, saved);
+          return saved;
+        }),
+      listAssetVersions: (assetId) =>
+        Effect.succeed(
+          [...assetVersions.values()]
+            .filter((version) => version.assetId === assetId)
+            .sort((left, right) => left.version - right.version),
         ),
       updateAssetStatus: (input) =>
         Effect.sync(() => {
@@ -1460,6 +1658,7 @@ export const makeInMemoryDb = (
     strategyRows: () => [...strategies.values()],
     packRows: () => [...packs.values()],
     assetRows: () => [...assets.values()],
+    assetVersionRows: () => [...assetVersions.values()],
     jobRows: () => [...jobs.values()],
     usageRows: () => [...usageEvents],
   };

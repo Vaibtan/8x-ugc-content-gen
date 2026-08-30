@@ -42,7 +42,7 @@ describe("ContentPackService", () => {
       pack: { status: "ready", costCents: expect.any(Number) },
     });
     expect(result.pack.costCents).toBeGreaterThan(0);
-    expect(result.pack.costCents).toBeLessThanOrEqual(1);
+    expect(result.pack.costCents).toBeLessThanOrEqual(30);
     expect(db.packRows()).toHaveLength(1);
     expect(db.assetRows()).toEqual(
       expect.arrayContaining([
@@ -65,14 +65,30 @@ describe("ContentPackService", () => {
         expect.objectContaining({ type: "render-magnet", status: "queued" }),
       ]),
     );
-    expect(db.usageRows()).toEqual([
+    expect(db.assetVersionRows()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "generic", fidelityScore: null }),
+        expect.objectContaining({
+          action: "voice-pass",
+          fidelityScore: expect.any(Number),
+        }),
+      ]),
+    );
+    expect(db.assetVersionRows()).toHaveLength(4);
+    expect(db.usageRows()).toEqual(
+      expect.arrayContaining([
       expect.objectContaining({
         operation: "openai.generate-pack-text.estimated",
         inputTokens: expect.any(Number),
         outputTokens: expect.any(Number),
-        costCents: result.pack.costCents,
+        costCents: expect.any(Number),
       }),
-    ]);
+      expect.objectContaining({
+        operation: "openai.voice-pass.terra.estimated",
+      }),
+      ]),
+    );
+    expect(db.usageRows()).toHaveLength(3);
   });
 
   it("reconnects by idempotency key without duplicating jobs or provider work", async () => {
@@ -92,7 +108,7 @@ describe("ContentPackService", () => {
     expect(second).toMatchObject({ reused: true, pack: { id: first.pack.id } });
     expect(db.packRows()).toHaveLength(1);
     expect(db.jobRows()).toHaveLength(4);
-    expect(db.usageRows()).toHaveLength(1);
+    expect(db.usageRows()).toHaveLength(3);
   });
 
   it("returns the persisted in-progress pack when a refresh races a running generation", async () => {
