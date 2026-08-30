@@ -1,16 +1,14 @@
 import { Effect } from "effect";
 
 import { type AssetRow, Db, type JobRow, type PackRow } from "@/lib/db/service";
+import { assetContentAsText } from "@/lib/content-pack/asset-content";
 import { sampleHookPatterns } from "@/lib/content-pack/hook-library";
 import { type PackText } from "@/lib/content-pack/schema";
 import { LLMPort } from "@/lib/ports";
 import { SupabaseError } from "@/lib/errors";
 import { Usage } from "@/lib/usage/service";
 import { type VoiceProfile } from "@/lib/voice/schema";
-import {
-  VoicePassService,
-  assetContentAsText,
-} from "@/lib/voice-pass/service";
+import { VoicePassService } from "@/lib/voice-pass/service";
 
 export type ContentPackInput = Readonly<{
   userId: string;
@@ -172,7 +170,13 @@ const completeAutomaticVoicePasses = (
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    for (const asset of [assets.post, assets.newsletter]) {
+    for (const asset of [
+      assets.post,
+      assets.carousel,
+      assets.video,
+      assets.newsletter,
+      assets.magnet,
+    ]) {
       const versions = yield* db.listAssetVersions(asset.id);
       if (!versions.some((version) => version.action === "generic")) {
         yield* db.createAssetVersion({

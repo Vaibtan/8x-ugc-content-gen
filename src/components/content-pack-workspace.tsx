@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { assetContentAsText } from "@/lib/content-pack/asset-content";
 import type {
   AssetRow,
   AssetVersion,
@@ -36,20 +37,7 @@ const money = (cents: number) =>
     minimumFractionDigits: 2,
   }).format(cents / 100);
 
-const contentFor = (asset: AssetRow) =>
-  typeof asset.content === "string"
-    ? asset.content
-    : asset.type === "post" && asset.content && typeof asset.content === "object"
-    ? ((asset.content as { variants?: string[] }).variants ?? []).join(
-        "\n\n---\n\n",
-      )
-    : asset.type === "newsletter" &&
-        asset.content &&
-        typeof asset.content === "object"
-      ? `${(asset.content as { subject?: string }).subject ?? ""}\n\n${(asset.content as { body?: string }).body ?? ""}`
-      : asset.content
-        ? JSON.stringify(asset.content, null, 2)
-        : "";
+const contentFor = (asset: AssetRow) => assetContentAsText(asset.content);
 
 const statusClass = (status: string) =>
   status === "done" || status === "ready" || status === "posted"
@@ -124,13 +112,7 @@ export function ContentPackWorkspace({
     }
   }, [loadPack, selectedPackId, snapshot]);
 
-  const textAssets = useMemo(
-    () =>
-      snapshot?.assets.filter(
-        (asset) => asset.type === "post" || asset.type === "newsletter",
-      ) ?? [],
-    [snapshot],
-  );
+  const textAssets = useMemo(() => snapshot?.assets ?? [], [snapshot]);
   const mediaAssets = useMemo(
     () =>
       snapshot?.assets.filter(

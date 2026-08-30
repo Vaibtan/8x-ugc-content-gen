@@ -6,6 +6,7 @@ import {
   Db,
   type PackRow,
 } from "@/lib/db/service";
+import { assetContentAsText } from "@/lib/content-pack/asset-content";
 import { SupabaseError } from "@/lib/errors";
 import { LLMPort } from "@/lib/ports";
 import { Usage } from "@/lib/usage/service";
@@ -27,24 +28,9 @@ export type VoicePassOutcome = Readonly<{
 }>;
 
 const isTextAsset = (asset: AssetRow) =>
-  asset.type === "post" || asset.type === "newsletter";
+  ["post", "carousel", "video", "newsletter", "magnet"].includes(asset.type);
 
-/** Convert legacy structured content into the original human-readable draft. */
-export const assetContentAsText = (content: unknown | null): string => {
-  if (typeof content === "string") return content;
-  if (content && typeof content === "object") {
-    const value = content as {
-      variants?: ReadonlyArray<string>;
-      subject?: string;
-      body?: string;
-    };
-    if (value.variants) return value.variants.join("\n\n---\n\n");
-    if (value.subject !== undefined || value.body !== undefined) {
-      return `${value.subject ?? ""}\n\n${value.body ?? ""}`.trim();
-    }
-  }
-  return content === null ? "" : JSON.stringify(content, null, 2);
-};
+export { assetContentAsText } from "@/lib/content-pack/asset-content";
 
 const estimateVoicePassUsage = (draft: string, rewrittenDraft: string) => {
   const inputTokens = Math.max(1, Math.ceil(draft.length / 4));

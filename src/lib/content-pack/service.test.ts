@@ -65,30 +65,33 @@ describe("ContentPackService", () => {
         expect.objectContaining({ type: "render-magnet", status: "queued" }),
       ]),
     );
-    expect(db.assetVersionRows()).toEqual(
-      expect.arrayContaining([
+    expect(db.assetVersionRows()).toHaveLength(10);
+    for (const asset of db.assetRows()) {
+      const versions = db
+        .assetVersionRows()
+        .filter((version) => version.assetId === asset.id);
+      expect(versions).toEqual([
         expect.objectContaining({ action: "generic", fidelityScore: null }),
         expect.objectContaining({
           action: "voice-pass",
           fidelityScore: expect.any(Number),
         }),
-      ]),
-    );
-    expect(db.assetVersionRows()).toHaveLength(4);
+      ]);
+    }
     expect(db.usageRows()).toEqual(
       expect.arrayContaining([
-      expect.objectContaining({
-        operation: "openai.generate-pack-text.estimated",
-        inputTokens: expect.any(Number),
-        outputTokens: expect.any(Number),
-        costCents: expect.any(Number),
-      }),
-      expect.objectContaining({
-        operation: "openai.voice-pass.terra.estimated",
-      }),
+        expect.objectContaining({
+          operation: "openai.generate-pack-text.estimated",
+          inputTokens: expect.any(Number),
+          outputTokens: expect.any(Number),
+          costCents: expect.any(Number),
+        }),
+        expect.objectContaining({
+          operation: "openai.voice-pass.terra.estimated",
+        }),
       ]),
     );
-    expect(db.usageRows()).toHaveLength(3);
+    expect(db.usageRows()).toHaveLength(6);
   });
 
   it("reconnects by idempotency key without duplicating jobs or provider work", async () => {
@@ -108,7 +111,7 @@ describe("ContentPackService", () => {
     expect(second).toMatchObject({ reused: true, pack: { id: first.pack.id } });
     expect(db.packRows()).toHaveLength(1);
     expect(db.jobRows()).toHaveLength(4);
-    expect(db.usageRows()).toHaveLength(3);
+    expect(db.usageRows()).toHaveLength(6);
   });
 
   it("returns the persisted in-progress pack when a refresh races a running generation", async () => {
@@ -221,7 +224,7 @@ describe("ContentPackService", () => {
         expect.objectContaining({ type: "generate-pack-text", status: "done" }),
       ]),
     );
-    expect(db.assetVersionRows()).toHaveLength(4);
+    expect(db.assetVersionRows()).toHaveLength(10);
     expect(db.assetVersionRows()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ action: "generic" }),

@@ -29,12 +29,13 @@ export async function GET(_request: Request, { params }: RouteContext) {
     runForUser(identity.accessToken, listPackJobs(packId)),
   ]);
   const versions = await Promise.all(
-    assets
-      .filter((asset) => asset.type === "post" || asset.type === "newsletter")
-      .map(async (asset) => [
-        asset.id,
-        await runForUser(identity.accessToken, listAssetVersions(asset.id)),
-      ] as const),
+    assets.map(
+      async (asset) =>
+        [
+          asset.id,
+          await runForUser(identity.accessToken, listAssetVersions(asset.id)),
+        ] as const,
+    ),
   );
   return Response.json({
     pack,

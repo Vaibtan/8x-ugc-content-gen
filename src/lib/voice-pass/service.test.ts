@@ -139,4 +139,110 @@ describe("VoicePassService", () => {
     expect(exit._tag).toBe("Failure");
     expect(db.assetVersionRows()).toHaveLength(1);
   });
+
+  it("steers carousel, video, and magnet source text while retaining every generic version", async () => {
+    const db = makeInMemoryDb();
+    const requestedDrafts: string[] = [];
+    const runtime = ManagedRuntime.make(
+      Layer.mergeAll(
+        db.layer,
+        makeInMemoryUsage().layer,
+        makeLLMPortFake({
+          voicePasses: [
+            makeVoicePassResultFixture({
+              rewrittenDraft: "Carousel in the founder's voice.",
+            }),
+            makeVoicePassResultFixture({
+              rewrittenDraft: "Video in the founder's voice.",
+            }),
+            makeVoicePassResultFixture({
+              rewrittenDraft: "Magnet in the founder's voice.",
+            }),
+          ],
+          onVoicePass: ({ draft }) => requestedDrafts.push(draft),
+        }),
+      ),
+    );
+    const seeded = await runtime.runPromise(
+      Effect.gen(function* () {
+        const repository = yield* Db;
+        const pack = yield* repository.createPack({
+          userId: "founder-1",
+          idea: "A concrete lesson from customer calls",
+          pillar: "Founder-led distribution",
+          goal: "leads",
+          idempotencyKey: "voice-pass-media-pack",
+        });
+        const assets = yield* Effect.all([
+          repository.upsertAsset({
+            packId: pack.id,
+            type: "carousel",
+            status: "queued",
+            content: [{ title: "Generic slide", body: "Generic explanation" }],
+          }),
+          repository.upsertAsset({
+            packId: pack.id,
+            type: "video",
+            status: "queued",
+            content: { script: "Generic video script" },
+          }),
+          repository.upsertAsset({
+            packId: pack.id,
+            type: "magnet",
+            status: "queued",
+            content: {
+              type: "checklist",
+              title: "Generic checklist",
+              bullets: ["Generic step"],
+            },
+          }),
+        ]);
+        for (const asset of assets) {
+          yield* repository.createAssetVersion({
+            assetId: asset.id,
+            action: "generic",
+            content: assetContentAsText(asset.content),
+            fidelityScore: null,
+            diffNotes: [],
+          });
+        }
+        return { pack, assets };
+      }),
+    );
+
+    const actions = ["more-like-my-voice", "punchier-hook", "shorter"] as const;
+    const outcomes = [];
+    for (const [index, asset] of seeded.assets.entries()) {
+      outcomes.push(
+        await runtime.runPromise(
+          runVoicePass({
+            userId: "founder-1",
+            packId: seeded.pack.id,
+            assetId: asset.id,
+            voiceProfile: profile,
+            action: actions[index]!,
+          }),
+        ),
+      );
+    }
+
+    expect(requestedDrafts).toEqual([
+      "1. Generic slide\nGeneric explanation",
+      "Generic video script",
+      "Generic checklist\nGeneric step",
+    ]);
+    expect(outcomes.map((outcome) => outcome.asset.content)).toEqual([
+      "Carousel in the founder's voice.",
+      "Video in the founder's voice.",
+      "Magnet in the founder's voice.",
+    ]);
+    for (const asset of seeded.assets) {
+      expect(
+        db.assetVersionRows().filter((version) => version.assetId === asset.id),
+      ).toEqual([
+        expect.objectContaining({ action: "generic", fidelityScore: null }),
+        expect.objectContaining({ fidelityScore: expect.any(Number) }),
+      ]);
+    }
+  });
 });
