@@ -1,0 +1,16 @@
+# dependencies and build output
+node_modules/
+.next/
+out/
+coverage/
+
+# local environment and Supabase state
+.env
+.env.local
+.env.*.local
+!.env.example
+.supabase/
+
+# editor and operating-system files
+.DS_Store
+*.tsbuildinfo
