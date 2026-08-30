@@ -1,7 +1,7 @@
 import { LanguageModel } from "@effect/ai";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import { FetchHttpClient } from "@effect/platform";
-import { Context, Effect, Layer, Schedule } from "effect";
+import { Context, Effect, Layer, Redacted, Schedule, Schema } from "effect";
 
 import {
   GenerationFailed,
@@ -17,6 +17,12 @@ import {
   VoiceProfileSchema,
   makeVoiceProfileFixture,
 } from "@/lib/voice/schema";
+import {
+  type Strategy,
+  type StrategySection,
+  StrategySchema,
+  makeStrategyFixture,
+} from "@/lib/strategy/schema";
 
 export type VoiceProfileGenerationRequest = Readonly<{
   transcript: string;
@@ -27,6 +33,22 @@ export type AudioInput = Readonly<{
   bytes: Uint8Array;
   fileName: string;
   mimeType: string;
+}>;
+
+export type StrategyGenerationRequest = Readonly<{
+  businessAnswers: string;
+  voiceProfile: VoiceProfile;
+  research: ReadonlyArray<string>;
+}>;
+
+export type StrategySectionGenerationRequest = StrategyGenerationRequest &
+  Readonly<{
+    current: Strategy;
+    section: StrategySection;
+  }>;
+
+export type NicheSearchRequest = Readonly<{
+  query: string;
 }>;
 
 export type LLMPortFailure =
@@ -47,6 +69,16 @@ export class LLMPort extends Context.Tag("founder-voice/LLMPort")<
     generateVoiceProfile: (
       request: VoiceProfileGenerationRequest,
     ) => Effect.Effect<VoiceProfile, LLMPortFailure>;
+    generateStrategy: (
+      request: StrategyGenerationRequest,
+    ) => Effect.Effect<Strategy, LLMPortFailure>;
+    generateStrategySection: (
+      request: StrategySectionGenerationRequest,
+    ) => Effect.Effect<Strategy, LLMPortFailure>;
+    /** One Responses web-search request. StrategyService owns the two-call cap. */
+    searchNiche: (
+      request: NicheSearchRequest,
+    ) => Effect.Effect<string, LLMPortFailure>;
     transcribe: (audio: AudioInput) => Effect.Effect<string, LLMPortFailure>;
   }>
 >() {}
@@ -167,6 +199,73 @@ const profilePrompt = ({
     pastPosts.length > 0 ? pastPosts.join("\n\n---\n\n") : "None provided.",
   ].join("\n\n");
 
+const strategyPrompt = ({
+  businessAnswers,
+  voiceProfile,
+  research,
+}: StrategyGenerationRequest) =>
+  [
+    "Create a 30-day content strategy for this B2B founder.",
+    "Return exactly 3 to 5 pillars. Each pillar must have a stable lowercase kebab-case id and multiple concrete angles.",
+    "Return exactly 30 calendar items dated on consecutive days. Each item must use one returned pillar id.",
+    "Use exactly 15 TOFU, 9 MOFU, and 6 BOFU calendar items.",
+    "Keep claims grounded in the interview and supplied research. Do not invent customers, results, or citations.",
+    "Business interview:",
+    businessAnswers,
+    "Voice profile:",
+    JSON.stringify(voiceProfile),
+    "Niche research:",
+    research.length > 0
+      ? research.join("\n\n---\n\n")
+      : "No web research requested.",
+  ].join("\n\n");
+
+const strategySectionPrompt = ({
+  current,
+  section,
+  ...request
+}: StrategySectionGenerationRequest) =>
+  [
+    strategyPrompt(request),
+    `Regenerate only the ${section} section of the current strategy.`,
+    "The response must still satisfy the full strategy schema, but the application will retain every non-target section.",
+    section === "pillars"
+      ? "Keep every existing pillar id exactly unchanged so the saved calendar remains valid. Improve only the names, descriptions, and angles."
+      : "Do not change any non-target section.",
+    "Current strategy:",
+    JSON.stringify(current),
+  ].join("\n\n");
+
+const WebSearchResponseSchema = Schema.Struct({ output_text: Schema.String });
+
+const searchWithResponsesApi = (
+  apiKey: Redacted.Redacted<string>,
+  { query }: NicheSearchRequest,
+) =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${Redacted.value(apiKey)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.6-luna",
+          input: query,
+          tool_choice: "required",
+          tools: [{ type: "web_search", search_context_size: "low" }],
+        }),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) throw body;
+      return Schema.decodeUnknownSync(WebSearchResponseSchema)(body)
+        .output_text;
+    },
+    catch: (cause) =>
+      classifyProviderError("strategy-web-search", cause, "generation"),
+  });
+
 const languageModelLayer = (
   apiKey: Parameters<typeof OpenAiClient.layer>[0]["apiKey"],
 ) =>
@@ -204,6 +303,58 @@ export const LLMPortLive = Layer.effect(
           () =>
             new GenerationFailed({
               message: "Voice-profile generation timed out after 30 seconds.",
+              cause: "timeout",
+            }),
+        ),
+      generateStrategy: (request) =>
+        withProviderPolicy(
+          LanguageModel.generateObject({
+            objectName: "strategy",
+            prompt: strategyPrompt(request),
+            schema: StrategySchema,
+          }).pipe(
+            Effect.map((response) => response.value),
+            Effect.provide(modelLayer),
+            Effect.mapError((cause) =>
+              classifyProviderError("strategy", cause, "generation"),
+            ),
+          ),
+          () =>
+            new GenerationFailed({
+              message: "Strategy generation timed out after 30 seconds.",
+              cause: "timeout",
+            }),
+        ),
+      generateStrategySection: (request) =>
+        withProviderPolicy(
+          LanguageModel.generateObject({
+            objectName: `strategy_${request.section}`,
+            prompt: strategySectionPrompt(request),
+            schema: StrategySchema,
+          }).pipe(
+            Effect.map((response) => response.value),
+            Effect.provide(modelLayer),
+            Effect.mapError((cause) =>
+              classifyProviderError(
+                `strategy-${request.section}`,
+                cause,
+                "generation",
+              ),
+            ),
+          ),
+          () =>
+            new GenerationFailed({
+              message:
+                "Strategy section generation timed out after 30 seconds.",
+              cause: "timeout",
+            }),
+        ),
+      searchNiche: (request) =>
+        withProviderPolicy(
+          searchWithResponsesApi(config.openAiApiKey, request),
+          () =>
+            new GenerationFailed({
+              message: "Strategy web research timed out after 30 seconds.",
               cause: "timeout",
             }),
         ),
@@ -256,6 +407,10 @@ export const PublisherPortLive = Layer.succeed(PublisherPort, {
 
 export type LLMPortFakeOptions = Readonly<{
   voiceProfiles?: ReadonlyArray<VoiceProfile | LLMPortFailure>;
+  strategies?: ReadonlyArray<Strategy | LLMPortFailure>;
+  strategySections?: ReadonlyArray<Strategy | LLMPortFailure>;
+  webSearchResults?: ReadonlyArray<string | LLMPortFailure>;
+  onWebSearch?: (request: NicheSearchRequest) => void;
   transcriptions?: ReadonlyArray<string | LLMPortFailure>;
 }>;
 
@@ -279,11 +434,31 @@ export const makeLLMPortFake = (options: LLMPortFakeOptions = {}) => {
   const voiceProfiles = [
     ...(options.voiceProfiles ?? [makeVoiceProfileFixture()]),
   ];
+  const strategies = [...(options.strategies ?? [makeStrategyFixture()])];
+  const strategySections = [
+    ...(options.strategySections ?? [makeStrategyFixture()]),
+  ];
+  const webSearchResults = [
+    ...(options.webSearchResults ?? ["No live research was supplied."]),
+  ];
   const transcriptions = [...(options.transcriptions ?? ["fake transcript"])];
 
   return Layer.succeed(LLMPort, {
     generateVoiceProfile: () => {
       const next = voiceProfiles.shift() ?? makeVoiceProfileFixture();
+      return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
+    },
+    generateStrategy: () => {
+      const next = strategies.shift() ?? makeStrategyFixture();
+      return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
+    },
+    generateStrategySection: () => {
+      const next = strategySections.shift() ?? makeStrategyFixture();
+      return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
+    },
+    searchNiche: (request) => {
+      options.onWebSearch?.(request);
+      const next = webSearchResults.shift() ?? "No live research was supplied.";
       return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
     },
     transcribe: () => {

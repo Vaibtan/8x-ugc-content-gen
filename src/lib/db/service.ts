@@ -18,15 +18,31 @@ import {
   VoiceInterviewSchema,
   VoiceProfileSchema,
 } from "@/lib/voice/schema";
+import {
+  type CalendarItem,
+  type Strategy,
+  StrategySchema,
+  strategyValidationIssue,
+} from "@/lib/strategy/schema";
 
 export type UserRow = Database["public"]["Tables"]["users"]["Row"];
 type BrandKitRow = Database["public"]["Tables"]["brand_kits"]["Row"];
 type VoiceProfileDbRow = Database["public"]["Tables"]["voice_profiles"]["Row"];
+type StrategyDbRow = Database["public"]["Tables"]["strategies"]["Row"];
+type CalendarItemDbRow = Database["public"]["Tables"]["calendar_items"]["Row"];
 
 export type VoiceProfileRow = Readonly<{
   user_id: string;
   profile: VoiceProfile;
   interview: VoiceInterview;
+  created_at: string;
+  updated_at: string;
+}>;
+
+export type StrategyRow = Readonly<{
+  id: string;
+  user_id: string;
+  strategy: Strategy;
   created_at: string;
   updated_at: string;
 }>;
@@ -44,7 +60,7 @@ const decodeVoiceProfileRow = (row: VoiceProfileDbRow) =>
     }),
     catch: (cause) =>
       new SupabaseError({ operation: "voice_profiles.decode", cause }),
-});
+  });
 
 /**
  * Product use-cases depend on this repository boundary, never on Supabase.
@@ -79,6 +95,13 @@ export type DbService = Readonly<{
     profile: VoiceProfile;
     interview: VoiceInterview;
   }) => Effect.Effect<VoiceProfileRow, SupabaseError>;
+  findOwnStrategy: (
+    userId: string,
+  ) => Effect.Effect<StrategyRow | null, SupabaseError>;
+  saveStrategy: (
+    userId: string,
+    strategy: Strategy,
+  ) => Effect.Effect<StrategyRow, SupabaseError>;
 }>;
 
 export class Db extends Context.Tag("founder-voice/Db")<Db, DbService>() {}
@@ -90,6 +113,44 @@ const decodeBrandKit = (
   Effect.try({
     try: () => Schema.decodeUnknownSync(BrandKit)(row),
     catch: (cause) => new SupabaseError({ operation, cause }),
+  });
+
+const decodeStrategyRow = (
+  row: StrategyDbRow,
+  calendarRows: ReadonlyArray<CalendarItemDbRow>,
+): Effect.Effect<StrategyRow, SupabaseError> =>
+  Effect.try({
+    try: () => {
+      const stored = Schema.decodeUnknownSync(StrategySchema)(
+        row.strategy_json,
+      );
+      const calendar: ReadonlyArray<CalendarItem> = [...calendarRows]
+        .sort((left, right) =>
+          left.scheduled_for.localeCompare(right.scheduled_for),
+        )
+        .map((item) => ({
+          date: item.scheduled_for,
+          pillarId: item.pillar_id,
+          format: item.format,
+          hook: item.hook,
+          funnelStage: item.funnel_stage,
+        }));
+      const strategy = Schema.decodeUnknownSync(StrategySchema)({
+        ...stored,
+        calendar,
+      });
+      const issue = strategyValidationIssue(strategy);
+      if (issue !== null) throw new Error(issue);
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        strategy,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      };
+    },
+    catch: (cause) =>
+      new SupabaseError({ operation: "strategies.decode", cause }),
   });
 
 const makeAssetPath = (
@@ -262,6 +323,106 @@ export const DbLive = Layer.effect(
               }>,
           )
           .pipe(Effect.flatMap(decodeVoiceProfileRow)),
+      findOwnStrategy: (userId) =>
+        Effect.gen(function* () {
+          const strategy = yield* supabase.query<StrategyDbRow | null>(
+            "strategies.select-own",
+            (client) =>
+              client
+                .from("strategies")
+                .select()
+                .eq("user_id", userId)
+                .maybeSingle() as unknown as PromiseLike<{
+                data: StrategyDbRow | null;
+                error: unknown | null;
+              }>,
+          );
+          if (strategy === null) return null;
+          const calendar = yield* supabase.query<
+            ReadonlyArray<CalendarItemDbRow>
+          >(
+            "calendar_items.select-own",
+            (client) =>
+              client
+                .from("calendar_items")
+                .select()
+                .eq("strategy_id", strategy.id)
+                .order("scheduled_for", {
+                  ascending: true,
+                }) as unknown as PromiseLike<{
+                data: ReadonlyArray<CalendarItemDbRow> | null;
+                error: unknown | null;
+              }>,
+          );
+          return yield* decodeStrategyRow(strategy, calendar);
+        }),
+      saveStrategy: (userId, strategy) =>
+        Effect.gen(function* () {
+          const issue = strategyValidationIssue(strategy);
+          if (issue !== null) {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "strategies.validate",
+                cause: new Error(issue),
+              }),
+            );
+          }
+          const row = yield* supabase.query<StrategyDbRow>(
+            "strategies.upsert-own",
+            (client) =>
+              client
+                .from("strategies")
+                .upsert(
+                  {
+                    user_id: userId,
+                    strategy_json: Schema.encodeSync(StrategySchema)(
+                      strategy,
+                    ) as unknown as Json,
+                  },
+                  { onConflict: "user_id" },
+                )
+                .select()
+                .single() as unknown as PromiseLike<{
+                data: StrategyDbRow;
+                error: unknown | null;
+              }>,
+          );
+          yield* supabase.query<null>(
+            "calendar_items.delete-own",
+            (client) =>
+              client
+                .from("calendar_items")
+                .delete()
+                .eq("strategy_id", row.id) as unknown as PromiseLike<{
+                data: null;
+                error: unknown | null;
+              }>,
+          );
+          const calendar = yield* supabase.query<
+            ReadonlyArray<CalendarItemDbRow>
+          >(
+            "calendar_items.insert-own",
+            (client) =>
+              client
+                .from("calendar_items")
+                .insert(
+                  strategy.calendar.map((item) => ({
+                    user_id: userId,
+                    strategy_id: row.id,
+                    scheduled_for: item.date,
+                    pillar_id: item.pillarId,
+                    format: item.format,
+                    hook: item.hook,
+                    funnel_stage: item.funnelStage,
+                  })),
+                )
+                .select() as unknown as PromiseLike<{
+                data: ReadonlyArray<CalendarItemDbRow> | null;
+                error: unknown | null;
+              }>,
+          );
+          return yield* decodeStrategyRow(row, calendar);
+        }),
     } satisfies DbService;
   }),
 );
@@ -323,11 +484,24 @@ export const saveVoiceProfile = (input: {
     return yield* db.saveVoiceProfile(input);
   });
 
+export const findOwnStrategy = (userId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.findOwnStrategy(userId);
+  });
+
+export const saveStrategy = (userId: string, strategy: Strategy) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.saveStrategy(userId, strategy);
+  });
+
 export type InMemoryDb = Readonly<{
   layer: Layer.Layer<Db>;
   rows: () => ReadonlyArray<UserRow>;
   brandKitRows: () => ReadonlyArray<BrandKitType>;
   voiceProfileRows: () => ReadonlyArray<VoiceProfileRow>;
+  strategyRows: () => ReadonlyArray<StrategyRow>;
 }>;
 
 /** A deterministic in-memory repository for the single application test seam. */
@@ -335,11 +509,15 @@ export const makeInMemoryDb = (
   seed: ReadonlyArray<UserRow> = [],
   brandKitSeed: ReadonlyArray<BrandKitType> = [],
   voiceProfileSeed: ReadonlyArray<VoiceProfileRow> = [],
+  strategySeed: ReadonlyArray<StrategyRow> = [],
 ): InMemoryDb => {
   const users = new Map(seed.map((user) => [user.id, user]));
   const brandKits = new Map(brandKitSeed.map((kit) => [kit.user_id, kit]));
   const voiceProfiles = new Map(
     voiceProfileSeed.map((profile) => [profile.user_id, profile]),
+  );
+  const strategies = new Map(
+    strategySeed.map((strategy) => [strategy.user_id, strategy]),
   );
 
   return {
@@ -386,9 +564,35 @@ export const makeInMemoryDb = (
           voiceProfiles.set(userId, row);
           return row;
         }),
+      findOwnStrategy: (userId) =>
+        Effect.succeed(strategies.get(userId) ?? null),
+      saveStrategy: (userId, strategy) =>
+        Effect.gen(function* () {
+          const issue = strategyValidationIssue(strategy);
+          if (issue !== null) {
+            return yield* Effect.fail(
+              new SupabaseError({
+                operation: "strategies.validate",
+                cause: new Error(issue),
+              }),
+            );
+          }
+          const existing = strategies.get(userId);
+          const now = "2026-08-30T00:00:00.000Z";
+          const row: StrategyRow = {
+            id: existing?.id ?? `strategy-${userId}`,
+            user_id: userId,
+            strategy,
+            created_at: existing?.created_at ?? now,
+            updated_at: now,
+          };
+          strategies.set(userId, row);
+          return row;
+        }),
     }),
     rows: () => [...users.values()],
     brandKitRows: () => [...brandKits.values()],
     voiceProfileRows: () => [...voiceProfiles.values()],
+    strategyRows: () => [...strategies.values()],
   };
 };
