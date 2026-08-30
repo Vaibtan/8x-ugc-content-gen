@@ -1,6 +1,7 @@
 import { Layer, ManagedRuntime } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { saveAndLoadBrandKit } from "@/lib/brand-kit/service";
 import { findOwnUser, makeInMemoryDb } from "@/lib/db/service";
 import {
   MailPortFake,
@@ -39,5 +40,42 @@ describe("the application test seam", () => {
       display_name: "Avery Founder",
     });
     expect(db.rows()).toHaveLength(1);
+  });
+
+  it("persists a brand kit and reloads it through the Effect runtime", async () => {
+    const db = makeInMemoryDb();
+    const testLayer = Layer.mergeAll(
+      db.layer,
+      makeLLMPortFake(),
+      TTSPortFake,
+      RendererPortFake,
+      MailPortFake,
+      PublisherPortFake,
+    );
+    const testRuntime = ManagedRuntime.make(testLayer);
+
+    await expect(
+      testRuntime.runPromise(
+        saveAndLoadBrandKit("founder-1", {
+          display_name: "Avery Founder",
+          handle: "@averybuilds",
+          headshot_path: "founder-1/headshot/portrait.jpg",
+          logo_path: "founder-1/logo/mark.png",
+          primary_color: "#173F34",
+          secondary_color: "#D9613F",
+          font: "Manrope",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      user_id: "founder-1",
+      display_name: "Avery Founder",
+      handle: "@averybuilds",
+      headshot_path: "founder-1/headshot/portrait.jpg",
+      logo_path: "founder-1/logo/mark.png",
+      primary_color: "#173F34",
+      secondary_color: "#D9613F",
+      font: "Manrope",
+    });
+    expect(db.brandKitRows()).toHaveLength(1);
   });
 });
