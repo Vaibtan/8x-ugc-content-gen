@@ -1,11 +1,9 @@
 "use client";
 
-import { createClient } from "@supabase/supabase-js";
 import { LoaderCircle, Upload } from "lucide-react";
 import { useMemo, useState, useTransition } from "react";
 
 import {
-  BRAND_ASSET_BUCKET,
   BRAND_ASSET_MAX_BYTES,
   type BrandAssetKind,
   type BrandKit,
@@ -13,10 +11,7 @@ import {
 } from "@/lib/brand-kit/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  requestBrandAssetUploadAction,
-  saveBrandKitAction,
-} from "@/app/app/settings/actions";
+import { saveBrandKitAction } from "@/app/app/settings/actions";
 
 type AssetUrls = Readonly<{
   headshot: string | null;
@@ -53,16 +48,13 @@ const copyFromBrandKit = (brandKit: BrandKit | null): FormState =>
         font: brandKit.font,
       };
 
-const publicSupabaseClient = () => {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) {
-    throw new Error("Supabase is not configured for this preview.");
-  }
-  return createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-};
+type UploadedBrandAsset = Readonly<{ path: string }>;
+
+const isUploadedBrandAsset = (value: unknown): value is UploadedBrandAsset =>
+  typeof value === "object" &&
+  value !== null &&
+  "path" in value &&
+  typeof value.path === "string";
 
 export function BrandKitForm({
   initialBrandKit,
@@ -100,36 +92,23 @@ export function BrandKitForm({
     setUploading(kind);
     setMessage(null);
     try {
-      const uploadCapability = await requestBrandAssetUploadAction({
-        kind,
-        contentType: file.type,
-        size: file.size,
+      const body = new FormData();
+      body.set("kind", kind);
+      body.set("file", file);
+      const response = await fetch("/api/brand-assets", {
+        method: "POST",
+        body,
       });
-      if (!uploadCapability.ok) {
-        setMessage(uploadCapability.message);
-        return;
-      }
-
-      const client = publicSupabaseClient();
-      const { error } = await client.storage
-        .from(BRAND_ASSET_BUCKET)
-        .uploadToSignedUrl(
-          uploadCapability.value.path,
-          uploadCapability.value.token,
-          file,
-          { contentType: file.type },
-        );
-      if (error !== null) {
-        setMessage(
-          "The image upload failed. Please choose it again and retry.",
-        );
+      const uploadedAsset: unknown = await response.json();
+      if (!response.ok || !isUploadedBrandAsset(uploadedAsset)) {
+        setMessage("The image upload failed. Please choose it again and retry.");
         return;
       }
 
       const previewUrl = URL.createObjectURL(file);
       update(
         kind === "headshot" ? "headshot_path" : "logo_path",
-        uploadCapability.value.path,
+        uploadedAsset.path,
       );
       setAssetUrls((current) => ({ ...current, [kind]: previewUrl }));
       setMessage(

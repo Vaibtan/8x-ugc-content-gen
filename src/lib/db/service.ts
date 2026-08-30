@@ -16,12 +16,6 @@ import { Supabase } from "@/lib/supabase/service";
 export type UserRow = Database["public"]["Tables"]["users"]["Row"];
 type BrandKitRow = Database["public"]["Tables"]["brand_kits"]["Row"];
 
-export type BrandAssetUpload = Readonly<{
-  path: string;
-  signedUrl: string;
-  token: string;
-}>;
-
 /**
  * Product use-cases depend on this repository boundary, never on Supabase.
  * The small surface is intentional: it makes in-memory test data a real seam.
@@ -37,11 +31,12 @@ export type DbService = Readonly<{
     userId: string,
     input: BrandKitInput,
   ) => Effect.Effect<BrandKitType, SupabaseError>;
-  createBrandAssetUpload: (
+  uploadBrandAsset: (
     userId: string,
     kind: BrandAssetKind,
     contentType: BrandAssetContentType,
-  ) => Effect.Effect<BrandAssetUpload, SupabaseError>;
+    contents: Blob,
+  ) => Effect.Effect<string, SupabaseError>;
   createBrandAssetReadUrl: (
     path: string,
   ) => Effect.Effect<string, SupabaseError>;
@@ -147,30 +142,20 @@ export const DbLive = Layer.effect(
           );
           return yield* decodeBrandKit("brand_kits.decode", row);
         }),
-      createBrandAssetUpload: (userId, kind, contentType) => {
+      uploadBrandAsset: (userId, kind, contentType, contents) => {
         const path = makeAssetPath(userId, kind, contentType);
         return Effect.tryPromise({
           try: async () => {
-            const { data, error } = await supabase.client.storage
+            const { error } = await supabase.client.storage
               .from(BRAND_ASSET_BUCKET)
-              .createSignedUploadUrl(path);
-            if (error !== null || data === null) {
-              throw (
-                error ?? new Error("Supabase did not create an upload URL.")
-              );
+              .upload(path, contents, { contentType, upsert: false });
+            if (error !== null) {
+              throw error;
             }
-            return data;
+            return path;
           },
-          catch: toSupabaseError("brand_assets.create-signed-upload"),
-        }).pipe(
-          Effect.map(
-            (upload): BrandAssetUpload => ({
-              path,
-              signedUrl: upload.signedUrl,
-              token: upload.token,
-            }),
-          ),
-        );
+          catch: toSupabaseError("brand_assets.upload"),
+        });
       },
       createBrandAssetReadUrl: (path) =>
         Effect.tryPromise({
@@ -217,14 +202,15 @@ export const saveBrandKit = (userId: string, input: BrandKitInput) =>
     return yield* db.saveBrandKit(userId, input);
   });
 
-export const createBrandAssetUpload = (
+export const uploadBrandAsset = (
   userId: string,
   kind: BrandAssetKind,
   contentType: BrandAssetContentType,
+  contents: Blob,
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    return yield* db.createBrandAssetUpload(userId, kind, contentType);
+    return yield* db.uploadBrandAsset(userId, kind, contentType, contents);
   });
 
 export const createBrandAssetReadUrl = (path: string) =>
@@ -276,14 +262,8 @@ export const makeInMemoryDb = (
           brandKits.set(userId, brandKit);
           return brandKit;
         }),
-      createBrandAssetUpload: (userId, kind, contentType) => {
-        const path = makeAssetPath(userId, kind, contentType);
-        return Effect.succeed({
-          path,
-          signedUrl: `https://storage.example.test/upload/${path}`,
-          token: "test-upload-token",
-        });
-      },
+      uploadBrandAsset: (userId, kind, contentType, _contents) =>
+        Effect.succeed(makeAssetPath(userId, kind, contentType)),
       createBrandAssetReadUrl: (path) =>
         Effect.succeed(`https://storage.example.test/read/${path}`),
       getUsageCents: () => Effect.succeed(0),

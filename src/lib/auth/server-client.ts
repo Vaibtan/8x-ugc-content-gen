@@ -3,6 +3,11 @@ import { cookies } from "next/headers";
 
 import { type Database } from "@/lib/db/database.types";
 
+export type AuthenticatedIdentity = Readonly<{
+  userId: string;
+  accessToken: string;
+}>;
+
 const requiredPublicValue = (
   name: "NEXT_PUBLIC_SUPABASE_URL" | "NEXT_PUBLIC_SUPABASE_ANON_KEY",
 ) => {
@@ -46,3 +51,34 @@ export async function getCurrentSession() {
   }
   return data.session;
 }
+
+/**
+ * Validates the cookie-backed identity before server-side code constructs a
+ * per-user Effect layer. A client-supplied user id is never trusted.
+ */
+export const getAuthenticatedIdentity =
+  async (): Promise<AuthenticatedIdentity | null> => {
+    try {
+      const client = await createAuthServerClient();
+      const [
+        { data: userData, error: userError },
+        { data: sessionData, error: sessionError },
+      ] = await Promise.all([client.auth.getUser(), client.auth.getSession()]);
+
+      if (
+        userError !== null ||
+        sessionError !== null ||
+        userData.user === null ||
+        sessionData.session?.access_token === undefined
+      ) {
+        return null;
+      }
+
+      return {
+        userId: userData.user.id,
+        accessToken: sessionData.session.access_token,
+      };
+    } catch {
+      return null;
+    }
+  };

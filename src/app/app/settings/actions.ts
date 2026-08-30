@@ -3,31 +3,19 @@
 import { Effect, Schema } from "effect";
 import { revalidatePath } from "next/cache";
 
-import { createAuthServerClient } from "@/lib/auth/server-client";
 import {
-  BRAND_ASSET_MAX_BYTES,
-  BrandAssetKind as BrandAssetKindSchema,
   BrandKitInput as BrandKitInputSchema,
-  isBrandAssetContentType,
-  type BrandAssetContentType,
-  type BrandAssetKind,
   type BrandKit,
   type BrandKitInput,
 } from "@/lib/brand-kit/schema";
 import {
   createBrandAssetReadUrl,
-  createBrandAssetUpload,
   getUsageCents,
   loadBrandKit,
   saveBrandKit,
-  type BrandAssetUpload,
 } from "@/lib/db/service";
+import { getAuthenticatedIdentity } from "@/lib/auth/server-client";
 import { runForUser } from "@/lib/runtime";
-
-type AuthenticatedIdentity = Readonly<{
-  userId: string;
-  accessToken: string;
-}>;
 
 export type BrandKitSettingsData = Readonly<{
   authenticated: boolean;
@@ -45,40 +33,6 @@ const actionFailure = (message: string): ActionResult<never> => ({
   ok: false,
   message,
 });
-
-/**
- * `getUser` validates the cookie-backed identity with Supabase before a
- * server action constructs the per-user Effect layer. A browser-supplied
- * user id is never trusted.
- */
-const getAuthenticatedIdentity =
-  async (): Promise<AuthenticatedIdentity | null> => {
-    try {
-      const client = await createAuthServerClient();
-      const [
-        { data: userData, error: userError },
-        { data: sessionData, error: sessionError },
-      ] = await Promise.all([client.auth.getUser(), client.auth.getSession()]);
-
-      if (
-        userError !== null ||
-        sessionError !== null ||
-        userData.user === null ||
-        sessionData.session?.access_token === undefined
-      ) {
-        return null;
-      }
-
-      return {
-        userId: userData.user.id,
-        accessToken: sessionData.session.access_token,
-      };
-    } catch {
-      // A local preview with no Supabase environment is a signed-out state, not
-      // a reason for the mobile shell to crash.
-      return null;
-    }
-  };
 
 export async function loadBrandKitSettings(): Promise<BrandKitSettingsData> {
   const identity = await getAuthenticatedIdentity();
@@ -136,76 +90,6 @@ export async function saveBrandKitAction(
   } catch {
     return actionFailure(
       "Your brand kit could not be saved. Please try again.",
-    );
-  }
-}
-
-type BrandAssetRequest = Readonly<{
-  kind: unknown;
-  contentType: unknown;
-  size: unknown;
-}>;
-
-const decodeBrandAssetRequest = (
-  input: unknown,
-): { kind: BrandAssetKind; contentType: BrandAssetContentType } | null => {
-  if (typeof input !== "object" || input === null) {
-    return null;
-  }
-
-  const request = input as BrandAssetRequest;
-  if (
-    typeof request.kind !== "string" ||
-    typeof request.contentType !== "string" ||
-    typeof request.size !== "number" ||
-    request.size <= 0 ||
-    request.size > BRAND_ASSET_MAX_BYTES ||
-    !isBrandAssetContentType(request.contentType)
-  ) {
-    return null;
-  }
-
-  try {
-    return {
-      kind: Schema.decodeUnknownSync(BrandAssetKindSchema)(request.kind),
-      contentType: request.contentType,
-    };
-  } catch {
-    return null;
-  }
-};
-
-/**
- * The browser receives only a short-lived, one-file upload capability. The
- * service-role key never reaches the client, and the per-user RLS client is
- * still required to create this URL.
- */
-export async function requestBrandAssetUploadAction(
-  input: unknown,
-): Promise<ActionResult<BrandAssetUpload>> {
-  const identity = await getAuthenticatedIdentity();
-  if (identity === null) {
-    return actionFailure("Sign in before uploading an image.");
-  }
-
-  const request = decodeBrandAssetRequest(input);
-  if (request === null) {
-    return actionFailure("Use a JPG, PNG, or WebP image smaller than 5 MB.");
-  }
-
-  try {
-    const upload = await runForUser(
-      identity.accessToken,
-      createBrandAssetUpload(
-        identity.userId,
-        request.kind,
-        request.contentType,
-      ),
-    );
-    return { ok: true, value: upload };
-  } catch {
-    return actionFailure(
-      "An upload URL could not be created. Please try again.",
     );
   }
 }
