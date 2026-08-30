@@ -145,6 +145,56 @@ const packAssets = (
     return { post, newsletter, carousel, video, magnet };
   });
 
+const findExistingPackAssets = (
+  assets: ReadonlyArray<AssetRow>,
+): PackAssets | null => {
+  const find = (type: AssetRow["type"]) =>
+    assets.find((asset) => asset.type === type) ?? null;
+  const post = find("post");
+  const newsletter = find("newsletter");
+  const carousel = find("carousel");
+  const video = find("video");
+  const magnet = find("magnet");
+  return post && newsletter && carousel && video && magnet
+    ? { post, newsletter, carousel, video, magnet }
+    : null;
+};
+
+/**
+ * Complete only missing automatic voice-pass work. This makes a retry after a
+ * provider failure resume from the durable generic versions instead of
+ * regenerating a pack or overwriting a founder's saved history.
+ */
+const completeAutomaticVoicePasses = (
+  input: ContentPackInput,
+  packId: string,
+  assets: PackAssets,
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    for (const asset of [assets.post, assets.newsletter]) {
+      const versions = yield* db.listAssetVersions(asset.id);
+      if (!versions.some((version) => version.action === "generic")) {
+        yield* db.createAssetVersion({
+          assetId: asset.id,
+          action: "generic",
+          content: assetContentAsText(asset.content),
+          fidelityScore: null,
+          diffNotes: [],
+        });
+      }
+      if (!versions.some((version) => version.action === "voice-pass")) {
+        yield* VoicePassService.run({
+          userId: input.userId,
+          packId,
+          assetId: asset.id,
+          voiceProfile: input.voiceProfile,
+          action: "voice-pass",
+        });
+      }
+    }
+  });
+
 const queueMediaJobs = (packId: string, assets: PackAssets) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -213,10 +263,6 @@ export const generateContentPack = (input: ContentPackInput) =>
       input.userId,
       input.idempotencyKey,
     );
-    if (previous?.text !== null && previous !== null) {
-      return yield* hydrate(previous);
-    }
-
     const pack =
       previous ??
       (yield* db.createPack({
@@ -248,69 +294,73 @@ export const generateContentPack = (input: ContentPackInput) =>
       return yield* hydrate(pack);
     }
 
-    const text = yield* llm
-      .generateContentPack({
-        idea: input.idea,
-        pillar: input.pillar,
-        goal: input.goal,
-        voiceProfile: input.voiceProfile,
-        hookPatterns: sampleHookPatterns(`${input.idea}:${input.pillar}`),
-      })
-      .pipe(
-        Effect.tapError((error) =>
-          db
-            .updateJobStatus({
-              jobId: generationJob.id,
-              status: "failed",
-              error: error._tag,
-            })
-            .pipe(Effect.ignore),
-        ),
-      );
-    const metered = estimateGenerationUsage(input, text);
-    yield* usage.record({
-      userId: input.userId,
-      packId: pack.id,
-      operation: "openai.generate-pack-text.estimated",
-      ...metered,
-    });
-    const costCents = yield* usage.flush({
-      userId: input.userId,
-      packId: pack.id,
-    });
-    const savedPack = yield* db.saveGeneratedPack({
-      packId: pack.id,
-      text,
-      costCents,
-    });
-    const assets = yield* packAssets(savedPack.id, text, costCents);
-    // The generic draft is a real version, not a transient prompt artifact.
-    // Each text asset then takes the same Terra-backed service path as a
-    // founder steering action, which preserves a stable generic-vs-voice demo.
-    for (const asset of [assets.post, assets.newsletter]) {
-      yield* db.createAssetVersion({
-        assetId: asset.id,
-        action: "generic",
-        content: assetContentAsText(asset.content),
-        fidelityScore: null,
-        diffNotes: [],
-      });
-      yield* VoicePassService.run({
-        userId: input.userId,
-        packId: savedPack.id,
-        assetId: asset.id,
-        voiceProfile: input.voiceProfile,
-        action: "voice-pass",
-      });
-    }
+    const savedPack =
+      previous?.text === null || previous === null
+        ? yield* Effect.gen(function* () {
+            const text = yield* llm
+              .generateContentPack({
+                idea: input.idea,
+                pillar: input.pillar,
+                goal: input.goal,
+                voiceProfile: input.voiceProfile,
+                hookPatterns: sampleHookPatterns(`${input.idea}:${input.pillar}`),
+              })
+              .pipe(
+                Effect.tapError((error) =>
+                  db
+                    .updateJobStatus({
+                      jobId: generationJob.id,
+                      status: "failed",
+                      error: error._tag,
+                    })
+                    .pipe(Effect.ignore),
+                ),
+              );
+            const metered = estimateGenerationUsage(input, text);
+            yield* usage.record({
+              userId: input.userId,
+              packId: pack.id,
+              operation: "openai.generate-pack-text.estimated",
+              ...metered,
+            });
+            const costCents = yield* usage.flush({
+              userId: input.userId,
+              packId: pack.id,
+            });
+            return yield* db.saveGeneratedPack({
+              packId: pack.id,
+              text,
+              costCents,
+            });
+          })
+        : previous;
+    const existingAssets = yield* db.listPackAssets(savedPack.id);
+    const assets =
+      findExistingPackAssets(existingAssets) ??
+      (yield* packAssets(
+        savedPack.id,
+        savedPack.text as PackText,
+        savedPack.costCents,
+      ));
+    yield* completeAutomaticVoicePasses(input, savedPack.id, assets).pipe(
+      Effect.tapError((error) =>
+        db
+          .updateJobStatus({
+            jobId: generationJob.id,
+            status: "failed",
+            error: error._tag,
+          })
+          .pipe(Effect.ignore),
+      ),
+    );
     const mediaJobs = yield* queueMediaJobs(savedPack.id, assets);
+    const finalPack =
+      (yield* db.findOwnPack(input.userId, savedPack.id)) ?? savedPack;
     const completedGeneration = yield* db.updateJobStatus({
       jobId: generationJob.id,
       status: "done",
-      costCents,
+      costCents: finalPack.costCents,
     });
-    const finalPack =
-      (yield* db.findOwnPack(input.userId, savedPack.id)) ?? savedPack;
     return {
       pack: finalPack,
       assets: yield* db.listPackAssets(savedPack.id),

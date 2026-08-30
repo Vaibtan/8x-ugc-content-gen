@@ -173,6 +173,63 @@ describe("ContentPackService", () => {
     expect(db.assetRows()).toHaveLength(0);
   });
 
+  it("resumes an automatic voice-pass failure without regenerating or replacing saved versions", async () => {
+    const db = makeInMemoryDb();
+    const usage = makeInMemoryUsage();
+    let contentPackCalls = 0;
+    const runtime = ManagedRuntime.make(
+      Layer.mergeAll(
+        db.layer,
+        usage.layer,
+        makeLLMPortFake({
+          contentPacks: [makePackTextFixture()],
+          voicePasses: [
+            new RateLimited({
+              operation: "voice-pass",
+              retryAfterSeconds: 30,
+            }),
+          ],
+          onContentPack: () => {
+            contentPackCalls += 1;
+          },
+        }),
+      ),
+    );
+
+    const first = await runtime.runPromise(
+      generateContentPack(input).pipe(Effect.either),
+    );
+
+    expect(first).toMatchObject({
+      _tag: "Left",
+      left: { _tag: "RateLimited", retryAfterSeconds: 30 },
+    });
+    expect(contentPackCalls).toBe(1);
+    expect(db.jobRows()).toEqual([
+      expect.objectContaining({ type: "generate-pack-text", status: "failed" }),
+    ]);
+    expect(db.assetVersionRows()).toEqual([
+      expect.objectContaining({ action: "generic" }),
+    ]);
+
+    const resumed = await runtime.runPromise(generateContentPack(input));
+
+    expect(resumed).toMatchObject({ reused: false, pack: { status: "ready" } });
+    expect(contentPackCalls).toBe(1);
+    expect(db.jobRows()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "generate-pack-text", status: "done" }),
+      ]),
+    );
+    expect(db.assetVersionRows()).toHaveLength(4);
+    expect(db.assetVersionRows()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "generic" }),
+        expect.objectContaining({ action: "voice-pass" }),
+      ]),
+    );
+  });
+
   it("requeues only a failed media asset and creates one new retry job", async () => {
     const db = makeInMemoryDb();
     const usage = makeInMemoryUsage();

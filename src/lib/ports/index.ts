@@ -523,6 +523,7 @@ export type LLMPortFakeOptions = Readonly<{
   webSearchResults?: ReadonlyArray<string | LLMPortFailure>;
   onWebSearch?: (request: NicheSearchRequest) => void;
   contentPacks?: ReadonlyArray<PackText | LLMPortFailure>;
+  onContentPack?: (request: ContentPackGenerationRequest) => void;
   voicePasses?: ReadonlyArray<VoicePassResult | LLMPortFailure>;
   onVoicePass?: (request: VoicePassGenerationRequest) => void;
   transcriptions?: ReadonlyArray<string | LLMPortFailure>;
@@ -579,7 +580,8 @@ export const makeLLMPortFake = (options: LLMPortFakeOptions = {}) => {
       const next = webSearchResults.shift() ?? "No live research was supplied.";
       return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
     },
-    generateContentPack: () => {
+    generateContentPack: (request) => {
+      options.onContentPack?.(request);
       const next = contentPacks.shift() ?? makePackTextFixture();
       return isLLMPortFailure(next) ? Effect.fail(next) : Effect.succeed(next);
     },
